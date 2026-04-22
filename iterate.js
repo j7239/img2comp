@@ -15,14 +15,16 @@ const SCORES = path.join(__dirname, 'scores.log');
 
 // Named coordinates for color sampling, expressed as fractions of the reference image dims
 // so they remain valid if the reference is swapped for one at a different resolution.
+// Button is a circle ~radius 0.23 centered at (0.47, 0.44) in reference.png.
+// Icon occupies the dead center, so 'base' samples off-center to avoid stroke pixels.
 const SAMPLE_POINTS = {
-    base:           [0.50, 0.50],
-    topHighlight:   [0.50, 0.18],
-    topLeftTint:    [0.28, 0.22],
-    topRightTint:   [0.72, 0.22],
-    bottomShadow:   [0.50, 0.82],
-    leftEdge:       [0.20, 0.50],
-    rightEdge:      [0.80, 0.50],
+    base:           [0.40, 0.47],
+    topHighlight:   [0.47, 0.23],
+    topLeftTint:    [0.32, 0.28],
+    topRightTint:   [0.62, 0.28],
+    bottomShadow:   [0.47, 0.60],
+    leftEdge:       [0.28, 0.44],
+    rightEdge:      [0.66, 0.44],
 };
 
 function assertReferenceIsPng() {
