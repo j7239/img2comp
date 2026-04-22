@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Glass Button Comparison</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #f0f0f0;
+            padding: 40px 20px;
+        }
+
+        .comparison-container {
+            display: flex;
+            gap: 40px;
+            justify-content: center;
+            align-items: flex-start;
+            max-width: 1200px;
+            margin: 0 auto;
+            flex-wrap: wrap;
+        }
+
+        .comparison-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .label {
+            font-size: 18px;
+            font-weight: 600;
+            color: #333;
+        }
+
+        .reference-image {
+            width: 400px;
+            height: 400px;
+            background: linear-gradient(135deg, #f5f5f5 0%, #e8e8e8 100%);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+        }
+
+        .reference-image img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        .button-preview {
+            width: 400px;
+            height: 400px;
+            background: linear-gradient(135deg, #f5f5f5 0%, #e8e8e8 100%);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+        }
+
+        /* Glass Button Styles */
+        .glass-button {
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            background: rgba(240, 238, 248, 0.4);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1.5px solid rgba(255, 255, 255, 0.5);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow:
+                0 20px 50px rgba(150, 120, 180, 0.3),
+                inset 0 1px 1px rgba(255, 255, 255, 0.8),
+                inset 0 -1px 2px rgba(0, 0, 0, 0.05);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .glass-button:hover {
+            background: rgba(245, 240, 255, 0.28);
+            border-color: rgba(255, 255, 255, 0.4);
+            box-shadow:
+                0 15px 45px rgba(180, 140, 200, 0.25),
+                inset 0 1px 1px rgba(255, 255, 255, 0.7),
+                inset 0 -1px 2px rgba(0, 0, 0, 0.06);
+            transform: translateY(-3px);
+        }
+
+        .glass-button:active {
+            background: rgba(235, 225, 245, 0.15);
+            border-color: rgba(255, 255, 255, 0.25);
+            box-shadow:
+                0 5px 15px rgba(180, 140, 200, 0.15),
+                inset 0 1px 1px rgba(255, 255, 255, 0.5),
+                inset 0 -1px 2px rgba(0, 0, 0, 0.04);
+            transform: translateY(-1px);
+        }
+
+        .icon {
+            width: 48px;
+            height: 48px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        svg {
+            width: 100%;
+            height: 100%;
+            color: rgba(155, 145, 170, 0.6);
+            transition: color 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .glass-button:hover svg {
+            color: rgba(120, 100, 145, 0.8);
+        }
+
+        .glass-button:active svg {
+            color: rgba(100, 80, 125, 0.75);
+        }
+
+        .state-label {
+            font-size: 12px;
+            color: #666;
+            margin-top: 8px;
+            font-weight: 500;
+        }
+    </style>
+</head>
+<body>
+    <div class="comparison-container">
+        <div class="comparison-item">
+            <div class="label">Reference Design</div>
+            <div class="reference-image">
+                <img src="data:image/png;base64,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" alt="Reference" />
+            </div>
+            <div class="state-label">Reference (default state)</div>
+        </div>
+
+        <div class="comparison-item">
+            <div class="label">Current Implementation</div>
+            <div class="button-preview">
+                <button class="glass-button">
+                    <div class="icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="5" y1="19" x2="19" y2="5"></line>
+                            <polyline points="19 5 12 5 19 12"></polyline>
+                        </svg>
+                    </div>
+                </button>
+            </div>
+            <div class="state-label">Current (default state)</div>
+        </div>
+    </div>
+</body>
+</html>

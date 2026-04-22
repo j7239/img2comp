@@ -1,0 +1,12 @@
+{
+  "name": "glass-button",
+  "version": "1.0.0",
+  "description": "Glass morphism button design",
+  "type": "module",
+  "scripts": {
+    "iterate": "node iterate.js"
+  },
+  "dependencies": {
+    "puppeteer": "^22.0.0"
+  }
+}
