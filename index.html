@@ -59,17 +59,47 @@
         }
 
         /* iterate.js auto-resizes .button-preview to match reference.png dims
-           before every screenshot — the CSS dims below only affect the
-           side-by-side layout shown in screenshots/default.png. */
+           (622 x 619) before every screenshot. Backdrop color and button
+           coords below are expressed in those reference pixels. */
         .button-preview {
+            /* Sampled backdrop color from reference corners */
+            --backdrop: #f7f7f7;
+            /* Glass color tokens sampled via iterate.js sample */
+            --glass-base: #e5e8ef;
+            --glass-top-highlight: #f5f5ff;
+            --glass-left-tint: #f5f9fc;
+            --glass-right-tint: #fdf7ff;
+            --icon-stroke: #c7c3d2;
+
+            position: relative;
             width: 400px;
             height: 400px;
-            background: #fff;
-            border-radius: 12px;
+            background: var(--backdrop);
+            overflow: hidden;
+        }
+
+        /* Circle at measured center (292, 270) with diameter 285 px.
+           top = 270 - 142.5 = 127.5 ; left = 292 - 142.5 = 149.5 */
+        .glass-button {
+            position: absolute;
+            top: 128px;
+            left: 150px;
+            width: 285px;
+            height: 285px;
+            border-radius: 50%;
+            border: none;
+            padding: 0;
+            background: var(--glass-base);
             display: flex;
             align-items: center;
             justify-content: center;
-            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+            color: var(--icon-stroke);
+            cursor: pointer;
+        }
+
+        .glass-button svg {
+            width: 78px;
+            height: 78px;
         }
 
         .state-label {
@@ -93,7 +123,13 @@
         <div class="comparison-item">
             <div class="label">Implementation</div>
             <div class="button-preview">
-                <button class="glass-button">↗</button>
+                <button class="glass-button" aria-label="Open in new">
+                    <!-- Lucide arrow-up-right -->
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M7 7h10v10"/>
+                        <path d="M7 17 17 7"/>
+                    </svg>
+                </button>
             </div>
             <div class="state-label">index.html — .button-preview</div>
         </div>
