@@ -2,7 +2,7 @@ import puppeteer from 'puppeteer';
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import { PNG } from 'pngjs';
 import pixelmatch from 'pixelmatch';
 import sharp from 'sharp';
@@ -11,7 +11,12 @@ import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// Project root: defaults to the directory holding this file, but tests override
+// via IMG2COMP_ROOT so they can run against an isolated fixture workspace
+// without mutating the real `.iterate/` output.
+const __dirname = process.env.IMG2COMP_ROOT
+    ? path.resolve(process.env.IMG2COMP_ROOT)
+    : path.dirname(fileURLToPath(import.meta.url));
 const REFERENCE = path.join(__dirname, 'reference.png');
 const INDEX_HTML = path.join(__dirname, 'index.html');
 const CONFIG_PATH = path.join(__dirname, 'iterate.config.json');
@@ -23,6 +28,8 @@ const SHOTS = path.join(OUT_DIR, 'screenshots');
 const PALETTE = path.join(OUT_DIR, 'palette.json');
 const SCORES = path.join(OUT_DIR, 'scores.log');
 const ANALYSIS = path.join(OUT_DIR, 'analysis.json');
+const HISTORY = path.join(OUT_DIR, 'history.jsonl');
+const REPORT = path.join(SHOTS, 'diff-report.json');
 
 function ensureOutDir() {
     if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
@@ -348,6 +355,84 @@ function writeSignedOverlay(implRaw, refRaw, W, H, outPath) {
     fs.writeFileSync(outPath, PNG.sync.write(png));
 }
 
+// Prescriptive next-action hint from the raw metrics. Encodes the same mapping
+// PROCESS.md step 6 describes in prose (deltaE → color, lumDelta → tone,
+// edgePct → geometry, else positional), so the per-iteration decision is a
+// lookup for the agent rather than open-ended reasoning.
+const GRID_REGIONS = [
+    ['top-left',    'top-center',    'top-right'],
+    ['middle-left', 'center',        'middle-right'],
+    ['bottom-left', 'bottom-center', 'bottom-right'],
+];
+
+function computeSuggestedEdit(report, prev) {
+    const { deltaE, lumDelta, edgePct, pixelmatchPct, grid } = report;
+
+    let maxCell = 0, maxR = 1, maxC = 1;
+    for (let r = 0; r < 3; r++) {
+        for (let c = 0; c < 3; c++) {
+            if (grid[r][c] > maxCell) { maxCell = grid[r][c]; maxR = r; maxC = c; }
+        }
+    }
+    const region = GRID_REGIONS[maxR][maxC];
+    const cellFocused = maxCell > pixelmatchPct * 1.5 && maxCell > 2;
+
+    let axis, hint, cssTargets, confidence;
+    if (deltaE > 6) {
+        axis = 'color';
+        hint = `Fill color is wrong${cellFocused ? ` — worst in ${region}` : ' overall'}. Adjust \`background\` gradient stops or switch interpolation to \`in oklch\` / \`in oklab\`.`;
+        cssTargets = ['background', 'background-color', 'background-image'];
+        confidence = Math.min(1, deltaE / 15);
+    } else if (Math.abs(lumDelta) > 12) {
+        axis = 'tone';
+        const dir = lumDelta > 0 ? 'too bright' : 'too dark';
+        hint = `Implementation is globally ${dir} (lumΔ=${lumDelta >= 0 ? '+' : ''}${lumDelta}). Shift gradient midpoint, lightness, or shadow opacity — don't touch geometry.`;
+        cssTargets = ['background', 'opacity', 'box-shadow'];
+        confidence = Math.min(1, Math.abs(lumDelta) / 30);
+    } else if (edgePct > Math.max(1, pixelmatchPct * 0.4)) {
+        axis = 'geometry';
+        hint = `Edge mismatch dominates (edges=${edgePct.toFixed(2)}% vs score=${pixelmatchPct.toFixed(2)}%). Check \`border-radius\`, border width, shadow spread, or element dimensions — colors are likely fine.`;
+        cssTargets = ['border-radius', 'border', 'box-shadow', 'width', 'height', 'aspect-ratio'];
+        confidence = Math.min(1, edgePct / 5);
+    } else {
+        axis = 'position';
+        hint = cellFocused
+            ? `Localized mismatch in ${region} (${maxCell.toFixed(2)}%) with clean color + edges — likely a small-feature or alignment issue. Read diff.png in that region.`
+            : `Residual noise only — color, tone, and edges are all low. Consider calling it done or look at diff.png for remaining visible gaps.`;
+        cssTargets = [];
+        confidence = cellFocused ? 0.5 : 0.25;
+    }
+
+    // Stall detection: if the previous run suggested the same axis AND score
+    // didn't drop meaningfully, don't keep pulling the same lever — flag a
+    // structural rethink (flip gradient direction, change base shadow, etc).
+    let stalled = false;
+    if (prev && prev.suggestedEdit && prev.suggestedEdit.axis === axis) {
+        const drop = prev.pixelmatchPct - pixelmatchPct;
+        if (drop < 0.25) stalled = true;
+    }
+
+    return {
+        axis,
+        region,
+        regionGrid: [maxR, maxC],
+        regionSeverity: +maxCell.toFixed(2),
+        confidence: +confidence.toFixed(2),
+        cssTargets,
+        stalled,
+        hint: stalled ? `STALLED (${axis} axis unchanged last run). Structural rethink — ${hint}` : hint,
+    };
+}
+
+function readPreviousReport() {
+    try { return JSON.parse(fs.readFileSync(REPORT, 'utf8')); } catch { return null; }
+}
+
+async function appendHistory(entry) {
+    ensureOutDir();
+    fs.appendFileSync(HISTORY, JSON.stringify(entry) + '\n');
+}
+
 async function runDiff(implBuf, refBuf, refMeta) {
     const refW = refMeta.width, refH = refMeta.height;
     const rect = MASK_BOX
@@ -417,6 +502,9 @@ async function runDiff(implBuf, refBuf, refMeta) {
     writeSignedOverlay(implRaw, refRaw, W, H, path.join(SHOTS, 'diff.png'));
     console.log(`✓ .iterate/screenshots/diff.png   (signed: red=impl too bright, green=impl too dark)`);
 
+    // Capture previous report before we overwrite — used for stall detection.
+    const prevReport = readPreviousReport();
+
     const report = {
         timestamp: new Date().toISOString(),
         rect,
@@ -429,19 +517,24 @@ async function runDiff(implBuf, refBuf, refMeta) {
         edgePct: +edgePct.toFixed(3),
         grid: gridPct,
     };
-    fs.writeFileSync(path.join(SHOTS, 'diff-report.json'), JSON.stringify(report, null, 2));
+    report.suggestedEdit = computeSuggestedEdit(report, prevReport);
+    fs.writeFileSync(REPORT, JSON.stringify(report, null, 2));
 
     const maskNote = MASK_BOX ? ` (mask ${W}×${H} at ${x},${y})` : '';
     console.log(`\nDiff score: ${mismatched.toLocaleString()} / ${total.toLocaleString()} px${maskNote}  (${pct.toFixed(2)}%)`);
     console.log(`  ΔE(Lab): ${report.deltaE}   lumΔ: ${report.lumDelta >= 0 ? '+' : ''}${report.lumDelta}   edges: ${report.edgePct.toFixed(2)}%`);
     console.log(`  grid 3×3 (% mismatch per cell, row-major):`);
     gridPct.forEach(row => console.log(`    ${row.map(v => v.toFixed(2).padStart(6)).join('  ')}`));
+    const sx = report.suggestedEdit;
+    console.log(`\n▶ next edit: ${sx.axis}/${sx.region} (conf ${sx.confidence})${sx.stalled ? ' — STALLED' : ''}`);
+    console.log(`  ${sx.hint}`);
+    if (sx.cssTargets.length) console.log(`  targets: ${sx.cssTargets.join(', ')}`);
     if (refMeta.hasAlpha && !MASK_BOX) {
         console.log('Note: reference has alpha — transparent regions contribute to the diff against the opaque preview.');
     }
     const logged = await appendScore(mismatched, total, pct, report);
     console.log(logged ? `  (appended to scores.log)` : `  (identical to previous — skipped scores.log append)`);
-    return pct;
+    return { pct, report, prevReport };
 }
 
 async function renderFrame(page, refMeta, flags) {
@@ -556,13 +649,36 @@ async function autoRevert() {
 }
 
 async function handleGitAutomation(prev, pct, flags) {
-    if (prev == null) return;
+    if (prev == null) return null;
     const drop = prev - pct;
     if (flags.commitOnImprove && drop >= IMPROVE_THRESHOLD_PP) {
-        await autoCommit(pct);
+        return (await autoCommit(pct)) ? 'committed' : null;
     } else if (flags.revertOnRegress && drop < 0) {
-        await autoRevert();
+        return (await autoRevert()) ? 'reverted' : null;
     }
+    return null;
+}
+
+async function logHistory(prevPct, result) {
+    if (!result) return;
+    const { report, prevReport } = result;
+    const props = await detectEditedProps();
+    const prevAxis = prevReport?.suggestedEdit?.axis ?? null;
+    const entry = {
+        ts: report.timestamp,
+        score: report.pixelmatchPct,
+        prev: prevPct,
+        delta: prevPct != null ? +(report.pixelmatchPct - prevPct).toFixed(3) : null,
+        axis: report.suggestedEdit.axis,
+        region: report.suggestedEdit.region,
+        stalled: report.suggestedEdit.stalled,
+        edits: props || null,
+        // Link outcome to the axis that *drove* this edit (prev report's suggestion),
+        // not the axis being suggested for the next iteration.
+        drivenBy: prevAxis,
+        outcome: result.gitAction ?? (prevPct == null ? 'baseline' : (report.pixelmatchPct < prevPct - 0.001 ? 'improved' : (report.pixelmatchPct > prevPct + 0.001 ? 'regressed' : 'noop'))),
+    };
+    await appendHistory(entry);
 }
 
 async function singleRun(flags) {
@@ -572,8 +688,9 @@ async function singleRun(flags) {
     try {
         const rendered = await renderFrame(ctx.page, ctx.refMeta, flags);
         if (!rendered) return;
-        const pct = await runDiff(rendered.implBuf, ctx.refBuf, ctx.refMeta);
-        await handleGitAutomation(prev, pct, flags);
+        const result = await runDiff(rendered.implBuf, ctx.refBuf, ctx.refMeta);
+        result.gitAction = await handleGitAutomation(prev, result.pct, flags);
+        await logHistory(prev, result);
     } finally {
         await ctx.close();
     }
@@ -627,8 +744,9 @@ async function watchMode(flags) {
             console.log(`↺ ${updateType === 'hot' ? '⚡ hot (CSS inject)' : '⟳ full (setContent)'}`);
             const rendered = await renderFrame(ctx.page, ctx.refMeta, flags);
             if (!rendered) return;
-            const pct = await runDiff(rendered.implBuf, ctx.refBuf, ctx.refMeta);
-            await handleGitAutomation(prev, pct, flags);
+            const result = await runDiff(rendered.implBuf, ctx.refBuf, ctx.refMeta);
+            result.gitAction = await handleGitAutomation(prev, result.pct, flags);
+            await logHistory(prev, result);
             // Sync lastHtml to whatever the file is now (may differ if reverted/committed).
             // The watcher skips runs where content matches lastHtml, so this prevents
             // git-op file changes from re-triggering the loop.
@@ -878,4 +996,19 @@ async function main() {
     }
 }
 
-main();
+// Only auto-run the CLI when invoked directly — not when tests import this
+// module to reach the pure helpers below.
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+    main();
+}
+
+export {
+    computeSuggestedEdit,
+    GRID_REGIONS,
+    stripStyles,
+    extractStyles,
+    toHex,
+    rgbToLab,
+    readPreviousScore,
+    readPreviousReport,
+};

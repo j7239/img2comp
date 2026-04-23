@@ -4,7 +4,11 @@
   "description": "Reference image to web component iteration harness",
   "type": "module",
   "scripts": {
-    "iterate": "node iterate.js"
+    "iterate": "node iterate.js",
+    "test": "node --test 'tests/unit/*.test.mjs' 'tests/integration/init.test.mjs' 'tests/integration/sample.test.mjs' 'tests/integration/inspect.test.mjs' 'tests/integration/agent.test.mjs'",
+    "test:unit": "node --test 'tests/unit/*.test.mjs'",
+    "test:integration": "node --test 'tests/integration/*.test.mjs'",
+    "test:all": "node --test 'tests/unit/*.test.mjs' 'tests/integration/*.test.mjs'"
   },
   "dependencies": {
     "pixelmatch": "^7.1.0",

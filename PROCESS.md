@@ -134,21 +134,30 @@ This keeps puppeteer and the HTTP server alive, re-renders and re-diffs on every
 Each iteration is one pass through this loop:
 
 1. **Save `index.html`** — watch mode re-renders and re-diffs automatically. Without watch, run `node iterate.js` by hand.
-2. **Locate the biggest gap** using two signals together:
-   - **`.iterate/screenshots/diff-report.json` → `grid`** — the 3×3 breakdown tells you *where* the mismatch lives (e.g. `grid[2][1] = 58.64%` → biggest gap is bottom-center).
-   - **`.iterate/screenshots/diff.png`** — signed overlay. Red = impl is too bright at this pixel (remove brightness); green = impl is too dark (add brightness). Direction, not just magnitude.
-3. **Pick the kind of edit** from the metric breakdown:
-   - High `deltaE` → wrong fill color; fix `background`, gradient stops, or color-space (`oklch` vs `srgb`).
-   - Signed `lumDelta` → global tone bias; adjust overall lightness or gradient midpoint.
-   - High `edgePct` (relative to `pixelmatchPct`) → geometry is wrong; check `border-radius`, border width, shadow spread, icon silhouette — colors may be fine.
-   - High `pixelmatchPct` with low `deltaE` *and* low `edgePct` → likely positional or small-feature noise; look for a single region in the grid.
-4. **Make one named, targeted edit** in `index.html` (see CSS guardrails, step 7). Must use the CSS-first stack from step 3. No scattershot tweaks.
-5. **Save** — the next diff fires automatically.
-6. **Regression guard.** With `--commit-on-improve --revert-on-regress` the tool handles this: drops ≥ 0.5pp get committed with message `iter auto: <score>%`, regressions get reverted (`git checkout -- index.html`), no-ops (<0.5pp change) do neither — the file stays dirty so you can rethink structurally. Without the flags, do the same by hand: `git add index.html && git commit -m "iter N: <score>% — <named target>"` on drops, `git checkout -- index.html` on regressions.
-7. **Review the trend** in `.iterate/scores.log` after every run. Lines now carry `ΔE`, `lumΔ`, `edges`, and `edits=<css-props>` — use them to see not just whether the score is improving but *which axis* and *which kinds of edits* are driving it. If the trend flattens or reverses, stop and rethink.
-8. **Multi-step rollback** (when iteration has drifted): inspect `git log --oneline` to find the best prior state, then `git checkout <sha> -- index.html` to restore it. Commit the reset as its own entry (`git commit -m "reset to iter K: <score>%"`) so the log stays linear.
+2. **Read the prescription, don't re-derive it.** `.iterate/screenshots/diff-report.json` carries a `suggestedEdit` block computed deterministically from the metrics:
+   ```
+   suggestedEdit: {
+     axis: "color" | "tone" | "geometry" | "position",
+     region: "top-left" | ... | "bottom-right",
+     regionSeverity: <% mismatch in worst 3×3 cell>,
+     confidence: 0–1,
+     cssTargets: ["background", "box-shadow", ...],
+     stalled: <true if the same axis was suggested last run with no real drop>,
+     hint: "one-sentence next action"
+   }
+   ```
+   The axis mapping (`deltaE` → color, `lumDelta` → tone, `edgePct` → geometry, else position) used to live in this section as prose — it's now encoded in `iterate.js` so the per-iteration decision is a lookup rather than a reasoning pass. Fall back to `diff.png` + the raw `grid` only when `confidence < 0.3` (residual noise — the suggestion is weak) or `stalled === true` (the mechanical lever has run out of room).
+3. **Make one named, targeted edit** on a property in `cssTargets`, following `hint`. Name what you're fixing in one sentence (see CSS guardrails, step 7). If `stalled === true`, make a **structural** change — flip gradient direction, swap base color, reorder shadow layers, switch `in srgb` → `in oklch` — not another small tweak on the same axis. The `diff.png` signed overlay (red = impl too bright, green = impl too dark) is still the tiebreaker for direction when the hint is ambiguous.
+4. **Save** — the next diff fires automatically.
+5. **Regression guard.** With `--commit-on-improve --revert-on-regress` the tool handles this: drops ≥ 0.25pp get committed with message `iter auto: <score>%`, regressions get reverted (`git checkout -- index.html`), no-ops (<0.25pp change) do neither — the file stays dirty so you can rethink structurally. Without the flags, do the same by hand: `git add index.html && git commit -m "iter N: <score>% — <named target>"` on drops, `git checkout -- index.html` on regressions.
+6. **Review the trend.** Two logs, two purposes:
+   - `.iterate/scores.log` — human-readable timeline (`ΔE`, `lumΔ`, `edges`, `edits=<css-props>`). Skim to see whether the trend is improving.
+   - `.iterate/history.jsonl` — one JSON line per iteration with `score`, `prev`, `delta`, `axis`, `region`, `stalled`, `drivenBy` (which axis actually drove this edit — the *previous* suggestion), and `outcome` (`improved` / `regressed` / `noop` / `committed` / `reverted`). Read the last ~5 lines of this instead of re-parsing git log + scores when you need to know which axes have already been tried. If 3 consecutive entries show `outcome: "regressed"` or `outcome: "noop"` on the same `drivenBy`, stop and rethink structurally.
+7. **Multi-step rollback** (when iteration has drifted): inspect `git log --oneline` to find the best prior state, then `git checkout <sha> -- index.html` to restore it. Commit the reset as its own entry (`git commit -m "reset to iter K: <score>%"`) so the log stays linear.
 
 The side-by-side `.iterate/screenshots/default.png` is for human review only — never the diff input.
+
+**Delegating to the `iter-edit` subagent (optional, for speed).** Once watch mode is running and the first pass has anchored the baseline, the main session can offload the per-iteration edit to the `iter-edit` subagent defined in `.claude/agents/iter-edit.md`. That agent runs on a smaller model, reads only the `suggestedEdit` and current `index.html`, and returns a one-line named target + the edit applied — no metric interpretation, no prose. Use it when: (a) the loop is tight and steady on a single axis, (b) `confidence ≥ 0.5`, and (c) `stalled === false`. Stay in the main session for: the first pass (step 2), stalled loops, structural rethinks, and the every-3-iteration check-in with the user (step 8). The subagent is a throughput optimization for the mechanical middle of the loop — not a replacement for the judgment calls at its boundaries.
 
 ### 7. CSS guardrails
 Apply on every edit in step 6:
