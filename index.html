@@ -91,16 +91,41 @@
             border-radius: 50%;
             border: none;
             padding: 0;
-            background: var(--glass-base);
+            background:
+                /* right-side pink warmth matching reference right edge */
+                radial-gradient(ellipse 55% 80% at 100% 50%,
+                    rgba(253, 230, 255, 0.45) 0%,
+                    rgba(253, 230, 255, 0.18) 50%,
+                    transparent 75%),
+                /* chromatic fringe: blue-left → pink-right, top-only */
+                radial-gradient(ellipse 90% 38% at 50% 0%,
+                    rgba(150, 185, 255, 0.22) 0%,
+                    rgba(255, 160, 235, 0.12) 55%,
+                    transparent 75%),
+                /* glass sphere top highlight */
+                radial-gradient(ellipse 65% 55% at 50% 8%,
+                    rgba(255, 255, 255, 0.95) 0%,
+                    rgba(248, 248, 255, 0.65) 40%,
+                    transparent 70%),
+                /* base fill */
+                radial-gradient(ellipse at 50% 35%,
+                    #f4f4f9 0%,
+                    #e6e8ef 48%,
+                    #eeecf2 100%);
             display: flex;
             align-items: center;
             justify-content: center;
             color: var(--icon-stroke);
             cursor: pointer;
             box-shadow:
-                0 18px 32px -6px rgba(0, 0, 0, 0.08),
-                0 40px 72px -10px rgba(0, 0, 0, 0.12),
-                0 6px 24px rgba(210, 180, 220, 0.35);
+                /* soft white glow at button edge */
+                0 0 18px 6px rgba(255, 255, 255, 0.65),
+                /* ambient shadow — scaled back to avoid over-darkening */
+                0 4px 52px 2px rgba(100, 95, 120, 0.34),
+                /* downward emphasis */
+                0 22px 44px -4px rgba(100, 95, 120, 0.18),
+                /* inner shadow at bottom rim */
+                inset 0 -10px 22px rgba(155, 148, 185, 0.22);
         }
 
         .glass-button svg {

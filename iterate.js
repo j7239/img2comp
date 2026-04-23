@@ -21,7 +21,7 @@ const SCORES = path.join(__dirname, 'scores.log');
 // Optional foreground mask. When set, the diff score only counts mismatched
 // pixels inside this rectangle (coords in reference-pixel space). Leave null
 // to score the full image. Run `node iterate.js inspect` for a suggested rect.
-const MASK_BOX = null; // { x: 0, y: 0, width: 0, height: 0 }
+const MASK_BOX = { x: 120, y: 100, width: 360, height: 360 };
 
 // Named coordinates for color sampling, expressed as fractions of the reference image dims.
 const SAMPLE_POINTS = {
@@ -32,6 +32,12 @@ const SAMPLE_POINTS = {
     bottomShadow:   [0.47, 0.60],
     leftEdge:       [0.28, 0.44],
     rightEdge:      [0.66, 0.44],
+    rightBlobIn:    [0.69, 0.46],   // just at right edge of button
+    rightBlobOut:   [0.73, 0.46],   // 20px outside button right edge
+    bottomBlob:     [0.52, 0.70],   // in the bottom shadow diff area
+    aboveButton:    [0.47, 0.19],   // above button, in shadow ring area
+    rightShadow20:  [0.70, 0.44],   // 20px right of button edge
+    rightShadow35:  [0.76, 0.44],   // 35px right of button edge
 };
 
 const IMPROVE_THRESHOLD_PP = 0.5;  // min drop required for auto-commit
