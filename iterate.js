@@ -17,30 +17,13 @@ const INDEX_HTML = path.join(__dirname, 'index.html');
 const SHOTS = path.join(__dirname, 'screenshots');
 const PALETTE = path.join(__dirname, 'palette.json');
 const SCORES = path.join(__dirname, 'scores.log');
+const CONFIG_PATH = path.join(__dirname, 'iterate.config.json');
 
-// Optional foreground mask. When set, the diff score only counts mismatched
-// pixels inside this rectangle (coords in reference-pixel space). Leave null
-// to score the full image. Run `node iterate.js inspect` for a suggested rect.
-const MASK_BOX = { x: 120, y: 100, width: 360, height: 360 };
-
-// Named coordinates for color sampling, expressed as fractions of the reference image dims.
-const SAMPLE_POINTS = {
-    base:           [0.40, 0.47],
-    topHighlight:   [0.47, 0.23],
-    topLeftTint:    [0.32, 0.28],
-    topRightTint:   [0.62, 0.28],
-    bottomShadow:   [0.47, 0.60],
-    leftEdge:       [0.28, 0.44],
-    rightEdge:      [0.66, 0.44],
-    rightBlobIn:    [0.69, 0.46],   // just at right edge of button
-    rightBlobOut:   [0.73, 0.46],   // 20px outside button right edge
-    bottomBlob:     [0.52, 0.70],   // in the bottom shadow diff area
-    aboveButton:    [0.47, 0.19],   // above button, in shadow ring area
-    rightShadow20:  [0.70, 0.44],   // 20px right of button edge
-    rightShadow35:  [0.76, 0.44],   // 35px right of button edge
-};
-
-const IMPROVE_THRESHOLD_PP = 0.5;  // min drop required for auto-commit
+const CONFIG = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+const MASK_BOX = CONFIG.maskBox ?? null;
+const SAMPLE_POINTS = CONFIG.samplePoints ?? {};
+const IMPROVE_THRESHOLD_PP = CONFIG.improveThresholdPp ?? 0.5;
+const SELECTOR = CONFIG.selector ?? '.button-preview';
 
 function parseArgs() {
     const args = process.argv.slice(2);
@@ -335,15 +318,15 @@ function runDiff(implIn, refIn, refAlpha) {
 
 async function renderFrame(page, refMeta, flags) {
     const { width: refW, height: refH } = refMeta;
-    const sized = await page.evaluate((w, h) => {
-        const el = document.querySelector('.button-preview');
+    const sized = await page.evaluate((sel, w, h) => {
+        const el = document.querySelector(sel);
         if (!el) return false;
         el.style.width = w + 'px';
         el.style.height = h + 'px';
         return true;
-    }, refW, refH);
+    }, SELECTOR, refW, refH);
     if (!sized) {
-        console.error('✗ .button-preview not found in index.html — cannot size or screenshot.');
+        console.error(`✗ ${SELECTOR} not found in index.html — cannot size or screenshot.`);
         return null;
     }
 
@@ -352,7 +335,7 @@ async function renderFrame(page, refMeta, flags) {
         console.log('✓ screenshots/default.png         (side-by-side, human review)');
     }
 
-    const target = await page.$('.button-preview');
+    const target = await page.$(SELECTOR);
     const implPath = path.join(SHOTS, 'implementation.png');
     await target.screenshot({ path: implPath });
     console.log('✓ screenshots/implementation.png  (element crop, diff input)');

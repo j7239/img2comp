@@ -58,80 +58,13 @@
             object-fit: contain;
         }
 
-        /* iterate.js auto-resizes .button-preview to match reference.png dims
-           (622 x 619) before every screenshot. Backdrop color and button
-           coords below are expressed in those reference pixels. */
+        /* iterate.js auto-resizes .button-preview to match reference dims. */
         .button-preview {
-            /* Sampled backdrop color from reference corners */
-            --backdrop: #f7f7f7;
-            /* Glass color tokens sampled via iterate.js sample */
-            --glass-base: #e5e8ef;
-            --glass-top-highlight: #f5f5ff;
-            --glass-left-tint: #f5f9fc;
-            --glass-right-tint: #fdf7ff;
-            --icon-stroke: #c7c3d2;
-
             position: relative;
             width: 400px;
             height: 400px;
-            background: var(--backdrop);
+            background: #f0f0f0;
             overflow: hidden;
-        }
-
-        /* Circle at measured center (292, 270) with diameter 285 px in the
-           622x619 reference. Expressed as % of .button-preview so it
-           renders correctly at any preview size (browser 400x400, iterate
-           screenshot 622x619, etc). */
-        .glass-button {
-            position: absolute;
-            top: 20.68%;    /* 128 / 619 */
-            left: 24.12%;   /* 150 / 622 */
-            width: 45.82%;  /* 285 / 622 */
-            aspect-ratio: 1 / 1;
-            border-radius: 50%;
-            border: none;
-            padding: 0;
-            background:
-                /* right-side pink warmth matching reference right edge */
-                radial-gradient(ellipse 55% 80% at 100% 50%,
-                    rgba(253, 230, 255, 0.45) 0%,
-                    rgba(253, 230, 255, 0.18) 50%,
-                    transparent 75%),
-                /* chromatic fringe: blue-left → pink-right, top-only */
-                radial-gradient(ellipse 90% 38% at 50% 0%,
-                    rgba(150, 185, 255, 0.22) 0%,
-                    rgba(255, 160, 235, 0.12) 55%,
-                    transparent 75%),
-                /* glass sphere top highlight */
-                radial-gradient(ellipse 65% 55% at 50% 8%,
-                    rgba(255, 255, 255, 0.95) 0%,
-                    rgba(248, 248, 255, 0.65) 40%,
-                    transparent 70%),
-                /* base fill */
-                radial-gradient(ellipse at 50% 35%,
-                    #f4f4f9 0%,
-                    #e6e8ef 48%,
-                    #eeecf2 100%);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: var(--icon-stroke);
-            cursor: pointer;
-            box-shadow:
-                /* soft white glow at button edge */
-                0 0 18px 6px rgba(255, 255, 255, 0.65),
-                /* ambient shadow — scaled back to avoid over-darkening */
-                0 4px 52px 2px rgba(100, 95, 120, 0.34),
-                /* downward emphasis */
-                0 22px 44px -4px rgba(100, 95, 120, 0.18),
-                /* inner shadow at bottom rim */
-                inset 0 -10px 22px rgba(155, 148, 185, 0.22);
-        }
-
-        .glass-button svg {
-            width: 56.84%;          /* 162 / 285 — icon size relative to button */
-            height: 56.84%;
-            transform: translateY(4.94%);  /* 8 / 162 — % is of the SVG's own height */
         }
 
         .state-label {
@@ -155,13 +88,7 @@
         <div class="comparison-item">
             <div class="label">Implementation</div>
             <div class="button-preview">
-                <button class="glass-button" aria-label="Open in new">
-                    <!-- Lucide arrow-up-right -->
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M7 7h10v10"/>
-                        <path d="M7 17 17 7"/>
-                    </svg>
-                </button>
+                <!-- your implementation goes here -->
             </div>
             <div class="state-label">index.html — .button-preview</div>
         </div>
