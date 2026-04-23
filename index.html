@@ -78,14 +78,16 @@
             overflow: hidden;
         }
 
-        /* Circle at measured center (292, 270) with diameter 285 px.
-           top = 270 - 142.5 = 127.5 ; left = 292 - 142.5 = 149.5 */
+        /* Circle at measured center (292, 270) with diameter 285 px in the
+           622x619 reference. Expressed as % of .button-preview so it
+           renders correctly at any preview size (browser 400x400, iterate
+           screenshot 622x619, etc). */
         .glass-button {
             position: absolute;
-            top: 128px;
-            left: 150px;
-            width: 285px;
-            height: 285px;
+            top: 20.68%;    /* 128 / 619 */
+            left: 24.12%;   /* 150 / 622 */
+            width: 45.82%;  /* 285 / 622 */
+            aspect-ratio: 1 / 1;
             border-radius: 50%;
             border: none;
             padding: 0;
@@ -102,9 +104,9 @@
         }
 
         .glass-button svg {
-            width: 162px;
-            height: 162px;
-            transform: translateY(8px);
+            width: 56.84%;          /* 162 / 285 — icon size relative to button */
+            height: 56.84%;
+            transform: translateY(4.94%);  /* 8 / 162 — % is of the SVG's own height */
         }
 
         .state-label {
