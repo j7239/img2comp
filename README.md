@@ -12,8 +12,10 @@ Works on its own, but pairs with **Claude Code** for guided iteration.
 - Runs `pixelmatch` against `reference.png` to produce:
   - a numeric diff score (percentage of mismatched pixels), and
   - a visual diff map (`screenshots/diff.png`) highlighting where the gaps are.
+- **Watch mode** keeps puppeteer + the HTTP server alive, re-diffs on every `index.html` save, and optionally auto-commits improvements / auto-reverts regressions so the iteration loop runs itself.
+- **`inspect` mode** auto-measures the backdrop color, foreground bounding box, and icon bounding box — and suggests a `MASK_BOX` rect so the score ignores scenery you don't own.
 - Samples exact hex/RGB colors from the reference at named coordinates — no eyeballing.
-- Persists the score trend to `scores.log` and the sampled palette to `palette.json` so progress and design tokens survive closed terminals.
+- Persists the score trend to `scores.log` (with de-duplication of identical consecutive results) and the sampled palette to `palette.json` so progress and design tokens survive closed terminals.
 
 ## Prerequisites
 
@@ -26,8 +28,12 @@ Works on its own, but pairs with **Claude Code** for guided iteration.
 ```bash
 npm install
 # Replace reference.png with your target design
-node iterate.js           # render index.html, diff against reference.png
-node iterate.js sample    # extract color palette from reference.png
+node iterate.js                     # one-shot render + diff against reference.png
+node iterate.js sample              # extract color palette from reference.png
+node iterate.js inspect             # measure backdrop + foreground + icon bboxes
+node iterate.js watch \
+    --commit-on-improve \
+    --revert-on-regress             # recommended: auto-rerun on save + auto-commit/revert
 ```
 
 First run writes:
@@ -55,10 +61,10 @@ For stronger enforcement (no need to re-say it every session), add a short `CLAU
 1. **Analyze** — separate foreground element from backdrop; identify any icon/text and pick a free kit (Lucide, Inter, etc.).
 2. **Scaffold** — empty `.button-preview` shell, run `iterate.js` once, capture the baseline.
 3. **Tech contract** — CSS first (direct Figma-effect-to-CSS-property mapping); SVG only when CSS can't; no raster / Canvas / frameworks.
-4. **Measure + sample** — record foreground dimensions, then sample colors with `node iterate.js sample`.
-5. **Loop** — for each iteration: run, read `diff.png`, make *one named edit*, re-run. If the score drops, `git commit`. If it rises, `git checkout -- index.html`. If it barely moves, rethink structurally.
+4. **Measure + sample** — run `node iterate.js inspect` for auto-measured bboxes and a suggested `MASK_BOX`; then `node iterate.js sample` for colors.
+5. **Loop** — start `node iterate.js watch --commit-on-improve --revert-on-regress` once. Every save re-diffs, auto-commits on a ≥ 0.5pp drop, auto-reverts on a regression. Read `diff.png` between edits to pick the next named target.
 6. **Guardrails** — named target per edit; diminishing-returns cutoff at 0.5pp; layer caps (~3 gradient stops, ~4 shadows); prune no-ops.
-7. **Check in every 3 iterations** — propose "done" when the score is under ~1% with no visible foreground gaps.
+7. **Check in every 3 iterations** (5 if the trend is monotonic) — propose "done" when the score is under ~1% with no visible foreground gaps.
 
 Full detail in [PROCESS.md](PROCESS.md).
 
@@ -84,6 +90,6 @@ Full detail in [PROCESS.md](PROCESS.md).
 
 ## Known caveats
 
-- **Backdrop mismatch inflates the score.** If the reference has a textured backdrop that `.button-preview` doesn't match, the raw percentage rises. The *trend* (going down = improving) is still valid, and `diff.png` still shows foreground gaps visually. To reduce noise: match the backdrop in CSS, sample a solid fallback color, or crop to the foreground region.
+- **Backdrop mismatch inflates the score.** If the reference has a textured backdrop that `.button-preview` doesn't match, the raw percentage rises. The cleanest fix is to set `MASK_BOX` at the top of `iterate.js` to a rect around the target — `pixelmatch` then only counts mismatched pixels inside, and the reported % reflects foreground progress. Alternatives: match the backdrop in CSS, sample a solid fallback color, or crop the reference to the foreground region.
 - **Reference with alpha channel.** Transparent pixels read as their raw channel values during sampling and contribute to the diff against the opaque preview. `iterate.js` flags this in its output.
 - **DPR is pinned to 1.** Screenshots are taken at 1:1 with CSS pixels. High-DPR references must be scaled before use.
