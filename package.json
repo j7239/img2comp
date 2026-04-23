@@ -1,7 +1,7 @@
 {
-  "name": "glass-button",
+  "name": "img2comp",
   "version": "1.0.0",
-  "description": "Glass morphism button design",
+  "description": "Reference image to web component iteration harness",
   "type": "module",
   "scripts": {
     "iterate": "node iterate.js"
