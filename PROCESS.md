@@ -23,10 +23,10 @@ Before step 1, confirm all of the following:
 node iterate.js init
 ```
 
-This prints **automated measurements** (canvas size, backdrop color, foreground bounding box, gradient direction hint, 3×3 color grid) and a **visual questionnaire** (Q1–Q10).
+This prints **automated measurements** (canvas size, backdrop color, foreground bounding box, gradient direction hint, 3×3 color grid) and a **visual questionnaire** (Q1–Q10). The same measurements are also written to `.iterate/analysis.json` — read from there for deterministic access instead of parsing stdout.
 
 **Workflow:**
-1. Run `node iterate.js init` and read the automated measurements.
+1. Run `node iterate.js init` and read the automated measurements (stdout or `.iterate/analysis.json`).
 2. Look at `reference.png`.
 3. **Ask the user each question below.** Do not answer them yourself — the user's intent and knowledge of the source design is the input, not a pixel-reading guess. Ask all questions in one message so the user can answer in one pass. Tailor each question based on what's visible in the reference (e.g. if the element is clearly circular, skip the corner-radius options and just confirm).
 4. **Wait for the user's answers** before writing any CSS or markup. Do not proceed to step 2 until confirmed.
@@ -110,11 +110,11 @@ Order matters — bounds must be known before color samples can land on the elem
   - approximate shadow extent outside the element.
 - **Colors.** Refine the `SAMPLE_POINTS` fractions in `iterate.js` so each sample lands on the element (not the backdrop), then run `node iterate.js sample`. This:
   - prints each sampled point to stdout, and
-  - writes `palette.json` with all values (persisted so the palette survives closed terminals).
+  - writes `.iterate/palette.json` with all values (persisted so the palette survives closed terminals).
 - Feed the sampled hex values into CSS custom properties per step 3.
 
 ### 5. Canvas alignment (automatic)
-- `iterate.js` reads `reference.png`'s pixel dimensions and **automatically resizes `.button-preview`** to match before every screenshot. The element-level screenshot (`screenshots/implementation.png`) is therefore always exactly the same dims as the reference — `pixelmatch` compares raw against raw with no stretching.
+- `iterate.js` reads `reference.png`'s pixel dimensions and **automatically resizes `.button-preview`** to match before every screenshot. The element-level screenshot (`.iterate/screenshots/implementation.png`) is therefore always exactly the same dims as the reference — `pixelmatch` compares raw against raw with no stretching.
 - The CSS dimensions of `.button-preview` in `index.html` don't matter for diff accuracy; they only affect the side-by-side review layout.
 - If the auto-sizing ever fails (element missing, puppeteer error), `iterate.js` falls back to `sharp`'s `fit: 'cover'` resize and logs a warning. If you see the warning, fix the root cause — don't ignore it.
 - **Express the target element's geometry as % of `.button-preview`, not absolute reference-px.** The auto-resize only runs inside the screenshot pipeline — opening `index.html` directly in a browser keeps `.button-preview` at its CSS default (e.g. 400×400). Hardcoding coords like `top: 128px; width: 285px` measured from a 622×619 reference will screenshot fine but overflow and clip in the dev view. Convert measurements to percentages of the preview container (plus `aspect-ratio` for non-square shapes), and convert child offsets to percentages of their own box, so the browser view and the screenshot render identically at any container size. Verify by opening `index.html` in a browser once per session.
@@ -129,19 +129,26 @@ Order matters — bounds must be known before color samples can land on the elem
 node iterate.js watch --commit-on-improve --revert-on-regress
 ```
 
-This keeps puppeteer and the HTTP server alive, re-renders and re-diffs on every `index.html` save (~100ms debounce), auto-commits when the score drops by ≥ 0.25pp, and auto-reverts when the score goes up. You focus on CSS edits; the scoring, committing, and reverting run themselves. Leave it running in a terminal next to your editor. `--with-sidebyside` additionally emits `screenshots/default.png` on each run.
+This keeps puppeteer and the HTTP server alive, re-renders and re-diffs on every `index.html` save (~100ms debounce), auto-commits when the score drops by ≥ 0.25pp, and auto-reverts when the score goes up. You focus on CSS edits; the scoring, committing, and reverting run themselves. Leave it running in a terminal next to your editor. `--with-sidebyside` additionally emits `.iterate/screenshots/default.png` on each run.
 
 Each iteration is one pass through this loop:
 
 1. **Save `index.html`** — watch mode re-renders and re-diffs automatically. Without watch, run `node iterate.js` by hand.
-2. **Read `diff.png` to locate the biggest gap.** `diff.png` highlights mismatched regions — that's the map. Don't guess; pick the largest or most visually jarring region.
-3. **Make one named, targeted edit** in `index.html` (see CSS guardrails, step 7). Must use the CSS-first stack from step 3. No scattershot tweaks.
-4. **Save** — the next diff fires automatically.
-5. **Regression guard.** With `--commit-on-improve --revert-on-regress` the tool handles this: drops ≥ 0.5pp get committed with message `iter auto: <score>%`, regressions get reverted (`git checkout -- index.html`), no-ops (<0.5pp change) do neither — the file stays dirty so you can rethink structurally. Without the flags, do the same by hand: `git add index.html && git commit -m "iter N: <score>% — <named target>"` on drops, `git checkout -- index.html` on regressions.
-6. **Review the trend** in `scores.log` after every run. The log is the authoritative progress record — identical consecutive results are deduped, so only distinct scores appear. If the trend flattens or reverses, stop and rethink.
-7. **Multi-step rollback** (when iteration has drifted): inspect `git log --oneline` to find the best prior state, then `git checkout <sha> -- index.html` to restore it. Commit the reset as its own entry (`git commit -m "reset to iter K: <score>%"`) so the log stays linear.
+2. **Locate the biggest gap** using two signals together:
+   - **`.iterate/screenshots/diff-report.json` → `grid`** — the 3×3 breakdown tells you *where* the mismatch lives (e.g. `grid[2][1] = 58.64%` → biggest gap is bottom-center).
+   - **`.iterate/screenshots/diff.png`** — signed overlay. Red = impl is too bright at this pixel (remove brightness); green = impl is too dark (add brightness). Direction, not just magnitude.
+3. **Pick the kind of edit** from the metric breakdown:
+   - High `deltaE` → wrong fill color; fix `background`, gradient stops, or color-space (`oklch` vs `srgb`).
+   - Signed `lumDelta` → global tone bias; adjust overall lightness or gradient midpoint.
+   - High `edgePct` (relative to `pixelmatchPct`) → geometry is wrong; check `border-radius`, border width, shadow spread, icon silhouette — colors may be fine.
+   - High `pixelmatchPct` with low `deltaE` *and* low `edgePct` → likely positional or small-feature noise; look for a single region in the grid.
+4. **Make one named, targeted edit** in `index.html` (see CSS guardrails, step 7). Must use the CSS-first stack from step 3. No scattershot tweaks.
+5. **Save** — the next diff fires automatically.
+6. **Regression guard.** With `--commit-on-improve --revert-on-regress` the tool handles this: drops ≥ 0.5pp get committed with message `iter auto: <score>%`, regressions get reverted (`git checkout -- index.html`), no-ops (<0.5pp change) do neither — the file stays dirty so you can rethink structurally. Without the flags, do the same by hand: `git add index.html && git commit -m "iter N: <score>% — <named target>"` on drops, `git checkout -- index.html` on regressions.
+7. **Review the trend** in `.iterate/scores.log` after every run. Lines now carry `ΔE`, `lumΔ`, `edges`, and `edits=<css-props>` — use them to see not just whether the score is improving but *which axis* and *which kinds of edits* are driving it. If the trend flattens or reverses, stop and rethink.
+8. **Multi-step rollback** (when iteration has drifted): inspect `git log --oneline` to find the best prior state, then `git checkout <sha> -- index.html` to restore it. Commit the reset as its own entry (`git commit -m "reset to iter K: <score>%"`) so the log stays linear.
 
-The side-by-side `screenshots/default.png` is for human review only — never the diff input.
+The side-by-side `.iterate/screenshots/default.png` is for human review only — never the diff input.
 
 ### 7. CSS guardrails
 Apply on every edit in step 6:
@@ -155,14 +162,14 @@ Apply on every edit in step 6:
 
 ### 8. Check in with user every 3 iterations (5 if the trend is clean)
 - After every 3 iterations of step 6, pause — **unless the last 3 each dropped the score by ≥ 0.25pp with no regressions in between**, in which case extend the window to 5 before pausing. Monotonic improvement has earned the trust; don't interrupt it.
-- Show the user the latest `screenshots/default.png` side-by-side with `reference.png`, plus the `scores.log` trend (e.g., `baseline 8.81% → 5.40% → 3.12% → 2.08%`).
+- Show the user the latest `.iterate/screenshots/default.png` side-by-side with `reference.png`, plus the `.iterate/scores.log` trend (e.g., `baseline 8.81% → 5.40% → 3.12% → 2.08%`).
 - Ask: keep iterating, change direction, or call it done?
 - Do not silently continue past the check-in window — diminishing returns and subjective "close enough" calls belong to the user, not me.
 
 ### Done criteria (calibration)
 The user makes the final call, but these are the thresholds I use to suggest stopping:
 
-- **Strong candidate for "done":** diff score under ~0.5%, `diff.png` shows no visible foreground gaps, and the last 3 iterations each moved the score by <0.25pp. Propose calling it done.
-- **Keep going:** score still dropping by >0.25pp per iteration, or `diff.png` shows an obvious unaddressed foreground gap.
-- **Stop and rethink:** score plateaued above ~1% for 3+ iterations, or regressing. The current approach is probably structurally wrong — consider reverting to an earlier commit and trying a different base structure.
-- **Caveat:** if the backdrop caveat in step 5 is inflating the score, these thresholds refer to the *foreground-visible* state, not the raw number. Use `diff.png` as the tiebreaker.
+- **Strong candidate for "done":** `pixelmatchPct` under ~0.5%, `ΔE` under ~2 (sub-JND color error), `edgePct` under ~1%, `diff.png` shows no visible foreground gaps, and the last 3 iterations each moved the score by <0.25pp. Propose calling it done.
+- **Keep going:** any metric still dropping meaningfully, or `diff.png` shows an obvious unaddressed foreground gap, or the grid has a cell above ~5% while the overall score is low.
+- **Stop and rethink:** score plateaued above ~1% for 3+ iterations, or regressing, or one metric axis refuses to move (e.g. `edgePct` stuck while `ΔE` drops — geometry is structurally wrong, not a color problem). Consider reverting to an earlier commit and trying a different base structure.
+- **Caveat:** if the backdrop caveat in step 5 is inflating `pixelmatchPct`, these thresholds refer to the *foreground-visible* state, not the raw number. Use the grid breakdown and `diff.png` as the tiebreaker.

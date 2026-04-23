@@ -14,10 +14,19 @@ const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REFERENCE = path.join(__dirname, 'reference.png');
 const INDEX_HTML = path.join(__dirname, 'index.html');
-const SHOTS = path.join(__dirname, 'screenshots');
-const PALETTE = path.join(__dirname, 'palette.json');
-const SCORES = path.join(__dirname, 'scores.log');
 const CONFIG_PATH = path.join(__dirname, 'iterate.config.json');
+
+// All generated output lives under .iterate/ — keeps the repo root as the
+// base template surface (code, config, docs, user's reference.png).
+const OUT_DIR = path.join(__dirname, '.iterate');
+const SHOTS = path.join(OUT_DIR, 'screenshots');
+const PALETTE = path.join(OUT_DIR, 'palette.json');
+const SCORES = path.join(OUT_DIR, 'scores.log');
+const ANALYSIS = path.join(OUT_DIR, 'analysis.json');
+
+function ensureOutDir() {
+    if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
+}
 
 const CONFIG = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
 const MASK_BOX = CONFIG.maskBox ?? null;
@@ -41,14 +50,14 @@ function parseArgs() {
 
 function printUsage() {
     console.log(`Usage:
-  node iterate.js [FLAGS]          Render + diff once, append score to scores.log
-  node iterate.js init             Analyze reference + print visual questionnaire for briefing
-  node iterate.js sample           Sample palette from reference into palette.json
-  node iterate.js inspect          Print bounding boxes, backdrop, suggested MASK_BOX
+  node iterate.js [FLAGS]          Render + diff once, append score to .iterate/scores.log
+  node iterate.js init             Analyze reference + write .iterate/analysis.json + print briefing
+  node iterate.js sample           Sample palette from reference into .iterate/palette.json
+  node iterate.js inspect          Print bounding boxes, backdrop, suggested maskBox
   node iterate.js watch [FLAGS]    Keep server + browser alive, re-diff on index.html save
 
 Flags:
-  --with-sidebyside                Also write screenshots/default.png (side-by-side review)
+  --with-sidebyside                Also write .iterate/screenshots/default.png (side-by-side)
   --commit-on-improve              git-commit index.html if score drops ≥ ${IMPROVE_THRESHOLD_PP}pp
   --revert-on-regress              git-checkout index.html if score goes up at all
   -h, --help                       Show this message
@@ -123,6 +132,7 @@ async function sampleColors() {
         console.log(`  ${name.padEnd(14)} (${x}, ${y})  rgb(${r}, ${g}, ${b})${channels === 4 ? ` a=${a}` : ''}  ${hex}`);
     }
 
+    ensureOutDir();
     fs.writeFileSync(PALETTE, JSON.stringify({
         sampledAt: new Date().toISOString(),
         reference: path.basename(REFERENCE),
@@ -131,7 +141,7 @@ async function sampleColors() {
         points,
         palette,
     }, null, 2));
-    console.log(`\n✓ palette.json written`);
+    console.log(`\n✓ ${path.relative(__dirname, PALETTE)} written`);
     return palette;
 }
 
@@ -242,7 +252,22 @@ async function inspect() {
     }
 }
 
-function appendScore(mismatched, total, pct) {
+async function detectEditedProps() {
+    try {
+        const { stdout } = await gitExec('diff', 'HEAD', '--', 'index.html');
+        if (!stdout.trim()) return '';
+        const props = new Set();
+        for (const line of stdout.split('\n')) {
+            if (!line.startsWith('+') || line.startsWith('+++')) continue;
+            const m = line.match(/^\+\s*([a-z][a-z-]+)\s*:/);
+            if (m) props.add(m[1]);
+        }
+        return [...props].slice(0, 3).join(',');
+    } catch { return ''; }
+}
+
+async function appendScore(mismatched, total, pct, report = null) {
+    ensureOutDir();
     const maskTag = MASK_BOX ? ' mask=on' : '';
     // Dedupe: skip if the last logged entry has the same score + pixels (watch-mode spam)
     if (fs.existsSync(SCORES)) {
@@ -250,7 +275,12 @@ function appendScore(mismatched, total, pct) {
         const m = tail.match(/score=([\d.]+)%\s+pixels=(\d+)\/(\d+)/);
         if (m && m[1] === pct.toFixed(2) && +m[2] === mismatched && +m[3] === total) return false;
     }
-    const line = `${new Date().toISOString()}  score=${pct.toFixed(2)}%  pixels=${mismatched}/${total}${maskTag}\n`;
+    const extras = report
+        ? `  ΔE=${report.deltaE}  lumΔ=${report.lumDelta >= 0 ? '+' : ''}${report.lumDelta}  edges=${report.edgePct.toFixed(2)}%`
+        : '';
+    const props = await detectEditedProps();
+    const propsTag = props ? `  edits=${props}` : '';
+    const line = `${new Date().toISOString()}  score=${pct.toFixed(2)}%  pixels=${mismatched}/${total}${maskTag}${extras}${propsTag}\n`;
     fs.appendFileSync(SCORES, line);
     return true;
 }
@@ -265,54 +295,151 @@ function readPreviousScore() {
     return null;
 }
 
-function cloneBuffer(png) {
-    const copy = new PNG({ width: png.width, height: png.height });
-    png.data.copy(copy.data);
-    return copy;
+// sRGB → CIE Lab (D65). Used for perceptual color distance (ΔE76).
+function rgbToLab(r, g, b) {
+    const lin = v => { v /= 255; return v > 0.04045 ? Math.pow((v + 0.055) / 1.055, 2.4) : v / 12.92; };
+    const R = lin(r), G = lin(g), B = lin(b);
+    const X = (R * 0.4124564 + G * 0.3575761 + B * 0.1804375) / 0.95047;
+    const Y = (R * 0.2126729 + G * 0.7151522 + B * 0.0721750);
+    const Z = (R * 0.0193339 + G * 0.1191920 + B * 0.9503041) / 1.08883;
+    const f = v => v > 0.008856 ? Math.cbrt(v) : (7.787 * v + 16 / 116);
+    const fx = f(X), fy = f(Y), fz = f(Z);
+    return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
 }
 
-function runDiff(implIn, refIn, refAlpha) {
-    let impl = implIn, ref = refIn, total;
-    if (MASK_BOX) {
-        // Clone so we don't mutate cached buffers; zero pixels outside the mask
-        impl = cloneBuffer(implIn);
-        ref = cloneBuffer(refIn);
-        const { x, y, width: mw, height: mh } = MASK_BOX;
-        const W = impl.width, H = impl.height;
-        for (let iy = 0; iy < H; iy++) {
-            for (let ix = 0; ix < W; ix++) {
-                if (ix >= x && ix < x + mw && iy >= y && iy < y + mh) continue;
-                const i = (iy * W + ix) * 4;
-                impl.data[i] = ref.data[i] = 0;
-                impl.data[i + 1] = ref.data[i + 1] = 0;
-                impl.data[i + 2] = ref.data[i + 2] = 0;
-                impl.data[i + 3] = ref.data[i + 3] = 255;
-            }
-        }
-        total = mw * mh;
-    } else {
-        total = impl.width * impl.height;
+// Sobel magnitude map on greyscale luminance. Returns Uint8Array (W*H).
+function edgeMap(raw, W, H) {
+    const lum = new Float32Array(W * H);
+    for (let i = 0, p = 0; i < W * H; i++, p += 4) {
+        lum[i] = 0.299 * raw[p] + 0.587 * raw[p + 1] + 0.114 * raw[p + 2];
     }
+    const out = new Uint8Array(W * H);
+    for (let y = 1; y < H - 1; y++) {
+        for (let x = 1; x < W - 1; x++) {
+            const i = y * W + x;
+            const gx = -lum[i - W - 1] + lum[i - W + 1]
+                     - 2 * lum[i - 1] + 2 * lum[i + 1]
+                     - lum[i + W - 1] + lum[i + W + 1];
+            const gy = -lum[i - W - 1] - 2 * lum[i - W] - lum[i - W + 1]
+                     +  lum[i + W - 1] + 2 * lum[i + W] + lum[i + W + 1];
+            out[i] = Math.min(255, Math.sqrt(gx * gx + gy * gy));
+        }
+    }
+    return out;
+}
 
-    const diff = new PNG({ width: impl.width, height: impl.height });
-    const mismatched = pixelmatch(
-        impl.data, ref.data, diff.data,
-        impl.width, impl.height,
-        { threshold: 0.1 }
-    );
+// Signed overlay: dim reference as base; tint red where impl is too bright,
+// green where impl is too dark. Lets the AI read direction, not just magnitude.
+function writeSignedOverlay(implRaw, refRaw, W, H, outPath) {
+    const png = new PNG({ width: W, height: H });
+    for (let i = 0; i < W * H; i++) {
+        const o = i * 4;
+        const rL = 0.299 * refRaw[o] + 0.587 * refRaw[o + 1] + 0.114 * refRaw[o + 2];
+        const iL = 0.299 * implRaw[o] + 0.587 * implRaw[o + 1] + 0.114 * implRaw[o + 2];
+        const delta = iL - rL;
+        let r = refRaw[o] * 0.35, g = refRaw[o + 1] * 0.35, b = refRaw[o + 2] * 0.35;
+        if (Math.abs(delta) > 8) {
+            const mag = Math.min(1, Math.abs(delta) / 80);
+            if (delta > 0) { r = Math.min(255, r + 220 * mag); g *= (1 - mag); b *= (1 - mag); }
+            else { g = Math.min(255, g + 220 * mag); r *= (1 - mag); b *= (1 - mag); }
+        }
+        png.data[o] = r; png.data[o + 1] = g; png.data[o + 2] = b; png.data[o + 3] = 255;
+    }
+    fs.writeFileSync(outPath, PNG.sync.write(png));
+}
+
+async function runDiff(implBuf, refBuf, refMeta) {
+    const refW = refMeta.width, refH = refMeta.height;
+    const rect = MASK_BOX
+        ? { x: MASK_BOX.x, y: MASK_BOX.y, width: MASK_BOX.width, height: MASK_BOX.height }
+        : { x: 0, y: 0, width: refW, height: refH };
+    const { x, y, width: W, height: H } = rect;
+
+    // Pre-crop once with sharp.extract — no full-canvas allocations for masked runs.
+    const [implRaw, refRaw] = await Promise.all([
+        sharp(implBuf).ensureAlpha().extract({ left: x, top: y, width: W, height: H }).raw().toBuffer(),
+        sharp(refBuf).ensureAlpha().extract({ left: x, top: y, width: W, height: H }).raw().toBuffer(),
+    ]);
+
+    // --- pixelmatch on cropped region ---
+    const diffData = Buffer.alloc(W * H * 4);
+    const mismatched = pixelmatch(implRaw, refRaw, diffData, W, H, { threshold: 0.1 });
+    const total = W * H;
     const pct = (mismatched / total) * 100;
 
-    fs.writeFileSync(path.join(SHOTS, 'diff.png'), PNG.sync.write(diff));
-    console.log(`✓ screenshots/diff.png            (mismatched regions)`);
+    // --- ΔE (CIE76, sampled every 4th pixel) + luminance delta ---
+    let deltaESum = 0, deltaECount = 0;
+    let lumSumImpl = 0, lumSumRef = 0;
+    const STRIDE = 4;
+    for (let py = 0; py < H; py += STRIDE) {
+        for (let px = 0; px < W; px += STRIDE) {
+            const o = (py * W + px) * 4;
+            const [L1, a1, b1] = rgbToLab(implRaw[o], implRaw[o + 1], implRaw[o + 2]);
+            const [L2, a2, b2] = rgbToLab(refRaw[o], refRaw[o + 1], refRaw[o + 2]);
+            const dL = L1 - L2, da = a1 - a2, db = b1 - b2;
+            deltaESum += Math.sqrt(dL * dL + da * da + db * db);
+            deltaECount++;
+            lumSumImpl += 0.299 * implRaw[o] + 0.587 * implRaw[o + 1] + 0.114 * implRaw[o + 2];
+            lumSumRef += 0.299 * refRaw[o] + 0.587 * refRaw[o + 1] + 0.114 * refRaw[o + 2];
+        }
+    }
+    const deltaE = deltaESum / deltaECount;
+    const lumDelta = (lumSumImpl - lumSumRef) / deltaECount;
 
-    const maskNote = MASK_BOX
-        ? ` (mask ${MASK_BOX.width}×${MASK_BOX.height} at ${MASK_BOX.x},${MASK_BOX.y})`
-        : '';
+    // --- edge score: % of pixels where sobel magnitude differs by > 24 ---
+    const eI = edgeMap(implRaw, W, H);
+    const eR = edgeMap(refRaw, W, H);
+    let edgeMismatch = 0;
+    for (let i = 0; i < eI.length; i++) if (Math.abs(eI[i] - eR[i]) > 24) edgeMismatch++;
+    const edgePct = (edgeMismatch / eI.length) * 100;
+
+    // --- 3×3 grid breakdown (RGB L1 distance > 30 per cell) ---
+    const CELLS = 3;
+    const grid = Array.from({ length: CELLS }, () => Array(CELLS).fill(0));
+    const cellCounts = Array.from({ length: CELLS }, () => Array(CELLS).fill(0));
+    for (let py = 0; py < H; py++) {
+        const cy = Math.min(CELLS - 1, Math.floor(py * CELLS / H));
+        for (let px = 0; px < W; px++) {
+            const cx = Math.min(CELLS - 1, Math.floor(px * CELLS / W));
+            cellCounts[cy][cx]++;
+            const o = (py * W + px) * 4;
+            const d = Math.abs(implRaw[o] - refRaw[o])
+                    + Math.abs(implRaw[o + 1] - refRaw[o + 1])
+                    + Math.abs(implRaw[o + 2] - refRaw[o + 2]);
+            if (d > 30) grid[cy][cx]++;
+        }
+    }
+    const gridPct = grid.map((row, cy) =>
+        row.map((n, cx) => +(n / cellCounts[cy][cx] * 100).toFixed(2))
+    );
+
+    // --- outputs ---
+    writeSignedOverlay(implRaw, refRaw, W, H, path.join(SHOTS, 'diff.png'));
+    console.log(`✓ .iterate/screenshots/diff.png   (signed: red=impl too bright, green=impl too dark)`);
+
+    const report = {
+        timestamp: new Date().toISOString(),
+        rect,
+        masked: !!MASK_BOX,
+        pixelmatchPct: +pct.toFixed(3),
+        mismatched,
+        total,
+        deltaE: +deltaE.toFixed(2),
+        lumDelta: +lumDelta.toFixed(2),
+        edgePct: +edgePct.toFixed(3),
+        grid: gridPct,
+    };
+    fs.writeFileSync(path.join(SHOTS, 'diff-report.json'), JSON.stringify(report, null, 2));
+
+    const maskNote = MASK_BOX ? ` (mask ${W}×${H} at ${x},${y})` : '';
     console.log(`\nDiff score: ${mismatched.toLocaleString()} / ${total.toLocaleString()} px${maskNote}  (${pct.toFixed(2)}%)`);
-    if (refAlpha && !MASK_BOX) {
+    console.log(`  ΔE(Lab): ${report.deltaE}   lumΔ: ${report.lumDelta >= 0 ? '+' : ''}${report.lumDelta}   edges: ${report.edgePct.toFixed(2)}%`);
+    console.log(`  grid 3×3 (% mismatch per cell, row-major):`);
+    gridPct.forEach(row => console.log(`    ${row.map(v => v.toFixed(2).padStart(6)).join('  ')}`));
+    if (refMeta.hasAlpha && !MASK_BOX) {
         console.log('Note: reference has alpha — transparent regions contribute to the diff against the opaque preview.');
     }
-    const logged = appendScore(mismatched, total, pct);
+    const logged = await appendScore(mismatched, total, pct, report);
     console.log(logged ? `  (appended to scores.log)` : `  (identical to previous — skipped scores.log append)`);
     return pct;
 }
@@ -331,36 +458,65 @@ async function renderFrame(page, refMeta, flags) {
         return null;
     }
 
+    // Wait for webfonts + two rAF to let backdrop-filter / compositor settle.
+    // Without this, 0.2–0.5% of diff is glyph + compositor noise that varies run-to-run.
+    await page.evaluate(() => document.fonts?.ready ?? Promise.resolve());
+    await page.evaluate(() => new Promise(r =>
+        requestAnimationFrame(() => requestAnimationFrame(r))
+    ));
+
     if (flags.withSidebyside) {
         await page.screenshot({ path: path.join(SHOTS, 'default.png'), omitBackground: false });
-        console.log('✓ screenshots/default.png         (side-by-side, human review)');
+        console.log('✓ .iterate/screenshots/default.png (side-by-side, human review)');
     }
 
     const target = await page.$(SELECTOR);
+    const implBuf = await target.screenshot({ encoding: 'binary' });
     const implPath = path.join(SHOTS, 'implementation.png');
-    await target.screenshot({ path: implPath });
-    console.log('✓ screenshots/implementation.png  (element crop, diff input)');
-    return implPath;
+    fs.writeFileSync(implPath, implBuf);
+    console.log('✓ .iterate/screenshots/implementation.png  (element crop, diff input)');
+    return { implPath, implBuf };
 }
 
-async function setupContext() {
+async function setupContext(flags = {}) {
     const server = await startServer(8080);
     const [browser, refMeta, refBuf] = await Promise.all([
-        puppeteer.launch({ headless: true, args: ['--no-sandbox'] }),
+        puppeteer.launch({
+            headless: true,
+            args: [
+                '--no-sandbox',
+                '--font-render-hinting=none',
+                '--disable-lcd-text',
+                '--disable-background-timer-throttling',
+                '--disable-renderer-backgrounding',
+            ],
+        }),
         sharp(REFERENCE).metadata(),
         Promise.resolve(fs.readFileSync(REFERENCE)),
     ]);
-    const ref = PNG.sync.read(refBuf);
     const page = await browser.newPage();
-    await page.setViewport({
-        width: Math.max(1200, refMeta.width * 2 + 200),
-        height: Math.max(800, refMeta.height + 200),
-        deviceScaleFactor: 1,
+
+    // Viewport: just enough to contain the element unless sidebyside is requested.
+    // Shrinking the paint area is the largest per-cycle speedup for big references.
+    const vw = flags.withSidebyside
+        ? Math.max(1200, refMeta.width * 2 + 200)
+        : Math.max(480, refMeta.width + 80);
+    const vh = flags.withSidebyside
+        ? Math.max(800, refMeta.height + 200)
+        : Math.max(480, refMeta.height + 80);
+    await page.setViewport({ width: vw, height: vh, deviceScaleFactor: 1 });
+
+    // Pin font smoothing globally so subpixel AA doesn't flicker between runs.
+    await page.evaluateOnNewDocument(() => {
+        const s = document.createElement('style');
+        s.textContent = `*,*::before,*::after{-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;text-rendering:geometricPrecision}`;
+        (document.head || document.documentElement).appendChild(s);
     });
+
     await page.goto('http://localhost:8080', { waitUntil: 'load' });
 
     return {
-        server, browser, page, ref, refMeta,
+        server, browser, page, refMeta, refBuf,
         close: async () => { await browser.close(); server.close(); },
     };
 }
@@ -412,12 +568,11 @@ async function handleGitAutomation(prev, pct, flags) {
 async function singleRun(flags) {
     if (!fs.existsSync(SHOTS)) fs.mkdirSync(SHOTS, { recursive: true });
     const prev = readPreviousScore();
-    const ctx = await setupContext();
+    const ctx = await setupContext(flags);
     try {
-        const implPath = await renderFrame(ctx.page, ctx.refMeta, flags);
-        if (!implPath) return;
-        const impl = PNG.sync.read(fs.readFileSync(implPath));
-        const pct = runDiff(impl, ctx.ref, ctx.refMeta.hasAlpha);
+        const rendered = await renderFrame(ctx.page, ctx.refMeta, flags);
+        if (!rendered) return;
+        const pct = await runDiff(rendered.implBuf, ctx.refBuf, ctx.refMeta);
         await handleGitAutomation(prev, pct, flags);
     } finally {
         await ctx.close();
@@ -436,19 +591,20 @@ function extractStyles(html) {
 
 async function watchMode(flags) {
     if (!fs.existsSync(SHOTS)) fs.mkdirSync(SHOTS, { recursive: true });
-    const ctx = await setupContext();
+    const ctx = await setupContext(flags);
     let running = false;
     let pendingReload = false;
     let lastHtml = null;
 
     // Returns 'hot' (CSS inject, no reload) or 'full' (setContent, no HTTP).
+    // Hot path replaces every <style> block's content with the concatenated new
+    // styles — avoids the silent-fallthrough bug when a file has multiple blocks.
     async function applyUpdate(newHtml) {
         if (lastHtml !== null && stripStyles(lastHtml) === stripStyles(newHtml)) {
-            // Only <style> changed — inject directly into the live DOM.
             const ok = await ctx.page.evaluate((styles) => {
-                const el = document.querySelector('style');
-                if (!el) return false;
-                el.textContent = styles;
+                const nodes = document.querySelectorAll('style');
+                if (nodes.length === 0) return false;
+                nodes.forEach((n, i) => { n.textContent = i === 0 ? styles : ''; });
                 return true;
             }, extractStyles(newHtml));
             if (ok) { lastHtml = newHtml; return 'hot'; }
@@ -469,10 +625,9 @@ async function watchMode(flags) {
             const newHtml = fs.readFileSync(INDEX_HTML, 'utf8');
             const updateType = await applyUpdate(newHtml);
             console.log(`↺ ${updateType === 'hot' ? '⚡ hot (CSS inject)' : '⟳ full (setContent)'}`);
-            const implPath = await renderFrame(ctx.page, ctx.refMeta, flags);
-            if (!implPath) return;
-            const impl = PNG.sync.read(fs.readFileSync(implPath));
-            const pct = runDiff(impl, ctx.ref, ctx.refMeta.hasAlpha);
+            const rendered = await renderFrame(ctx.page, ctx.refMeta, flags);
+            if (!rendered) return;
+            const pct = await runDiff(rendered.implBuf, ctx.refBuf, ctx.refMeta);
             await handleGitAutomation(prev, pct, flags);
             // Sync lastHtml to whatever the file is now (may differ if reverted/committed).
             // The watcher skips runs where content matches lastHtml, so this prevents
@@ -601,10 +756,28 @@ async function init() {
         }
     }
 
+    // ── Persist structured analysis for deterministic AI consumption ──────────
+    const analysis = {
+        reference: path.basename(REFERENCE),
+        dimensions: [width, height],
+        channels,
+        hasAlpha: !!meta.hasAlpha,
+        backdrop: { rgb: backdrop, hex: toHex(...backdrop) },
+        foreground: fw ? { x: fx1, y: fy1, width: fw, height: fh, aspectRatio: +aspectRatio } : null,
+        gradientHint,
+        topStripLum: +topAvg.toFixed(1),
+        bottomStripLum: +botAvg.toFixed(1),
+        hasTransparentForeground: hasTransparentPixels,
+        gridColors,
+    };
+    ensureOutDir();
+    fs.writeFileSync(ANALYSIS, JSON.stringify(analysis, null, 2));
+
     // ── Print report ──────────────────────────────────────────────────────────
     console.log('═══════════════════════════════════════════════════════');
     console.log('  INIT REPORT — read this before looking at reference.png');
     console.log('═══════════════════════════════════════════════════════\n');
+    console.log(`  (structured data also written to ${path.relative(__dirname, ANALYSIS)})\n`);
 
     console.log('AUTOMATED MEASUREMENTS');
     console.log('──────────────────────');

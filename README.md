@@ -8,14 +8,20 @@ Works on its own, but pairs with **Claude Code** for guided iteration.
 
 ## What it does
 
-- Renders `index.html` with headless Chromium and screenshots the target element at the reference's exact pixel dimensions.
-- Runs `pixelmatch` against `reference.png` to produce:
-  - a numeric diff score (percentage of mismatched pixels), and
-  - a visual diff map (`screenshots/diff.png`) highlighting where the gaps are.
-- **Watch mode** keeps puppeteer + the HTTP server alive, re-diffs on every `index.html` save (CSS-only changes use hot injection, skipping a full reload), and optionally auto-commits improvements / auto-reverts regressions so the iteration loop runs itself.
-- **`inspect` mode** auto-measures the backdrop color, foreground bounding box, and icon bounding box — and suggests a `MASK_BOX` rect so the score ignores scenery you don't own.
+- Renders `index.html` with headless Chromium and screenshots the target element at the reference's exact pixel dimensions. Font hinting and subpixel AA are pinned off, and the screenshot waits for `document.fonts.ready` + two animation frames — so glyph / compositor noise doesn't flicker the score between runs.
+- Compares against `reference.png` and emits a **multi-axis diff** on every cycle, not a single scalar:
+  - `pixelmatchPct` — overall mismatched-pixel percentage.
+  - `ΔE` (CIE Lab) — mean perceptual color error (is the *fill color* wrong?).
+  - `lumΔ` — signed luminance bias (is the impl too bright or too dark overall?).
+  - `edgePct` — Sobel-map mismatch (is the *geometry* — border radius, shadow shape, icon silhouette — wrong?).
+  - **3×3 grid breakdown** — mismatch % per cell, so you immediately know *where* the error lives.
+  - **Signed overlay** at `screenshots/diff.png` — **red** where impl is too bright, **green** where impl is too dark, over a dimmed reference base. Direction, not just magnitude.
+  - **`screenshots/diff-report.json`** — every metric above, structured for programmatic reads.
+- **Watch mode** keeps puppeteer + the HTTP server alive, re-diffs on every `index.html` save (CSS-only changes use hot injection; all `<style>` blocks are patched correctly), and optionally auto-commits improvements / auto-reverts regressions so the iteration loop runs itself.
+- **`init` mode** auto-measures the reference (canvas, backdrop, foreground bbox, gradient hint, 3×3 color grid, alpha presence) and writes `analysis.json` so consumers (CI, AI assistants) can read deterministic JSON instead of parsing stdout.
+- **`inspect` mode** auto-measures the backdrop, foreground bbox, and icon bbox — and suggests a `maskBox` rect so the score ignores scenery you don't own. With `maskBox` set, the diff pre-crops both images with `sharp.extract` before scoring — scales cleanly to large references.
 - Samples exact hex/RGB colors from the reference at named coordinates — no eyeballing.
-- Persists the score trend to `scores.log` (with de-duplication of identical consecutive results) and the sampled palette to `palette.json` so progress and design tokens survive closed terminals.
+- Persists the score trend to `scores.log` (de-duplicated), now annotated per line with `ΔE`, `lumΔ`, `edges`, and the CSS properties changed since last commit (`edits=background,box-shadow,...`) so the trend tells you *what kind of edit* is converging.
 
 ## Prerequisites
 
@@ -37,14 +43,18 @@ node iterate.js watch \
     --revert-on-regress             # recommended: auto-rerun on save + auto-commit/revert
 ```
 
-First run writes:
+All generated output is written under `.iterate/` (gitignored). Nothing generated touches the project root.
 
 ```
-screenshots/default.png         side-by-side layout, for human review
-screenshots/implementation.png  element-level crop of .button-preview (diff input)
-screenshots/diff.png            mismatched regions visualised
-scores.log                      append-only score trend
-palette.json                    sampled colors (sample mode only)
+.iterate/
+├── analysis.json                reference measurements from `init` (backdrop, bbox, grid colors)
+├── palette.json                 sampled colors (sample mode only)
+├── scores.log                   append-only score trend (with ΔE, lumΔ, edges, edits tags)
+└── screenshots/
+    ├── default.png              side-by-side layout, human review (--with-sidebyside only)
+    ├── implementation.png       element-level crop of .button-preview (diff input)
+    ├── diff.png                 signed overlay: red = impl too bright, green = impl too dark
+    └── diff-report.json         structured metrics (pixelmatch, ΔE, lumΔ, edges, 3×3 grid)
 ```
 
 ## Using with Claude Code
@@ -63,7 +73,7 @@ For stronger enforcement (no need to re-say it every session), add a short `CLAU
 2. **First pass** — write real CSS directly from the briefing answers; no blank stub. Run `iterate.js` to score it.
 3. **Tech contract** — CSS first (direct Figma-effect-to-CSS-property mapping); SVG only when CSS can't; no raster / Canvas / frameworks.
 4. **Measure + sample** — run `node iterate.js inspect` for auto-measured bboxes and a suggested `maskBox`; set it in `iterate.config.json`, then `node iterate.js sample` for colors (define named points under `samplePoints` in the config).
-5. **Loop** — start `node iterate.js watch --commit-on-improve --revert-on-regress` once. Every save re-diffs; CSS-only saves use hot injection (~100ms). Auto-commits on a ≥ `improveThresholdPp` drop (default 0.25pp), auto-reverts on a regression. Read `diff.png` between edits to pick the next named target.
+5. **Loop** — start `node iterate.js watch --commit-on-improve --revert-on-regress` once. Every save re-diffs; CSS-only saves use hot injection (~100ms). Auto-commits on a ≥ `improveThresholdPp` drop (default 0.25pp), auto-reverts on a regression. Between edits, use the **3×3 grid** to pick *where* to target and the **metric breakdown** to pick *what kind* of edit: high `ΔE` → fix fill colors; non-zero `lumΔ` → global tone is off; high `edgePct` → geometry (radius, stroke, shadow shape) is off. The signed `diff.png` tells you the *direction* (red = pull brightness down, green = push brightness up).
 6. **Guardrails** — named target per edit; diminishing-returns cutoff at 0.5pp; layer caps (~3 gradient stops, ~4 shadows); prune no-ops.
 7. **Check in every 3 iterations** (5 if the trend is monotonic) — propose "done" when the score is under ~1% with no visible foreground gaps.
 
@@ -82,6 +92,8 @@ All tunable constants live in `iterate.config.json` (no need to edit `iterate.js
 
 ## File structure
 
+The root holds only the **base template** — code, config, docs, and the user's `reference.png`. Everything generated lives under `.iterate/`, which is gitignored as a whole.
+
 ```
 .
 ├── .gitignore
@@ -91,8 +103,16 @@ All tunable constants live in `iterate.config.json` (no need to edit `iterate.js
 ├── index.html           scaffold with target element
 ├── iterate.js           render + diff + color-sample CLI
 ├── package.json
-├── reference.png        the target design (replace with your own)
-└── screenshots/         outputs written here (gitignored)
+├── reference.png        the target design (you provide this)
+└── .iterate/            all generated output (gitignored)
+    ├── analysis.json    reference measurements from `init`
+    ├── palette.json     sampled colors (sample mode only)
+    ├── scores.log       score trend with per-run metrics
+    └── screenshots/
+        ├── implementation.png  element crop (diff input)
+        ├── diff.png            signed overlay (red = too bright, green = too dark)
+        ├── diff-report.json    structured metrics for programmatic consumption
+        └── default.png         side-by-side (--with-sidebyside only)
 ```
 
 ## Scope
