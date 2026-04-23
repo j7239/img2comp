@@ -42,6 +42,7 @@ function parseArgs() {
 function printUsage() {
     console.log(`Usage:
   node iterate.js [FLAGS]          Render + diff once, append score to scores.log
+  node iterate.js init             Analyze reference + print visual questionnaire for briefing
   node iterate.js sample           Sample palette from reference into palette.json
   node iterate.js inspect          Print bounding boxes, backdrop, suggested MASK_BOX
   node iterate.js watch [FLAGS]    Keep server + browser alive, re-diff on index.html save
@@ -384,6 +385,11 @@ async function autoCommit(pct) {
 
 async function autoRevert() {
     try {
+        const { stdout: status } = await gitExec('status', '--porcelain', 'index.html');
+        if (!status.trim()) {
+            console.log(`  → already at HEAD, skipping revert`);
+            return false;
+        }
         await gitExec('checkout', '--', 'index.html');
         console.log(`  → git checkout -- index.html (reverted)`);
         return true;
@@ -418,24 +424,61 @@ async function singleRun(flags) {
     }
 }
 
+// Strip all <style> blocks from HTML for structural comparison.
+function stripStyles(html) {
+    return html.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '<style></style>');
+}
+
+// Concatenate all <style> block contents from HTML.
+function extractStyles(html) {
+    return [...html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/gi)].map(m => m[1]).join('\n');
+}
+
 async function watchMode(flags) {
     if (!fs.existsSync(SHOTS)) fs.mkdirSync(SHOTS, { recursive: true });
     const ctx = await setupContext();
     let running = false;
     let pendingReload = false;
+    let lastHtml = null;
+
+    // Returns 'hot' (CSS inject, no reload) or 'full' (setContent, no HTTP).
+    async function applyUpdate(newHtml) {
+        if (lastHtml !== null && stripStyles(lastHtml) === stripStyles(newHtml)) {
+            // Only <style> changed — inject directly into the live DOM.
+            const ok = await ctx.page.evaluate((styles) => {
+                const el = document.querySelector('style');
+                if (!el) return false;
+                el.textContent = styles;
+                return true;
+            }, extractStyles(newHtml));
+            if (ok) { lastHtml = newHtml; return 'hot'; }
+        }
+        // Structural change or first run — push content directly (no HTTP round-trip).
+        const withBase = newHtml.replace(/(<head[^>]*>)/i, '$1<base href="http://localhost:8080/">');
+        await ctx.page.setContent(withBase, { waitUntil: 'domcontentloaded' });
+        lastHtml = newHtml;
+        return 'full';
+    }
 
     async function runOnce() {
         if (running) { pendingReload = true; return; }
         running = true;
+        const t0 = Date.now();
         try {
             const prev = readPreviousScore();
-            await ctx.page.reload({ waitUntil: 'load' });
+            const newHtml = fs.readFileSync(INDEX_HTML, 'utf8');
+            const updateType = await applyUpdate(newHtml);
+            console.log(`↺ ${updateType === 'hot' ? '⚡ hot (CSS inject)' : '⟳ full (setContent)'}`);
             const implPath = await renderFrame(ctx.page, ctx.refMeta, flags);
             if (!implPath) return;
             const impl = PNG.sync.read(fs.readFileSync(implPath));
             const pct = runDiff(impl, ctx.ref, ctx.refMeta.hasAlpha);
             await handleGitAutomation(prev, pct, flags);
-            console.log('');
+            // Sync lastHtml to whatever the file is now (may differ if reverted/committed).
+            // The watcher skips runs where content matches lastHtml, so this prevents
+            // git-op file changes from re-triggering the loop.
+            try { lastHtml = fs.readFileSync(INDEX_HTML, 'utf8'); } catch {}
+            console.log(`  cycle: ${Date.now() - t0}ms\n`);
         } catch (err) {
             console.error('✗ run error:', err.message, '\n');
         } finally {
@@ -447,11 +490,18 @@ async function watchMode(flags) {
     await runOnce();
     console.log(`👀 watching ${path.basename(INDEX_HTML)} — save to re-diff, Ctrl+C to exit\n`);
 
+    // Watch the directory instead of the file — on macOS, git checkout and
+    // editor atomic-saves replace the inode, silently killing a file watcher.
+    // Content check in the debounce callback skips runs when git ops wrote the file
+    // back to a state we already processed, preventing re-trigger loops.
     let debounceTimer = null;
-    fs.watch(INDEX_HTML, (eventType) => {
-        if (eventType !== 'change') return;
+    fs.watch(__dirname, (_eventType, filename) => {
+        if (filename !== path.basename(INDEX_HTML)) return;
         clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(runOnce, 300);
+        debounceTimer = setTimeout(() => {
+            try { if (fs.readFileSync(INDEX_HTML, 'utf8') === lastHtml) return; } catch {}
+            runOnce();
+        }, 100);
     });
 
     let closing = false;
@@ -466,6 +516,166 @@ async function watchMode(flags) {
     process.on('SIGTERM', cleanup);
 
     return new Promise(() => {}); // keep alive
+}
+
+async function init() {
+    // ── Automated analysis ────────────────────────────────────────────────────
+    const img = sharp(REFERENCE);
+    const meta = await img.metadata();
+    const { data, info } = await img.raw().toBuffer({ resolveWithObject: true });
+    const { width, height } = meta;
+    const channels = info.channels;
+
+    // Backdrop: mode of outer-ring samples
+    const bucketCounts = new Map();
+    const addSample = (r, g, b) => {
+        const key = `${r >> 3},${g >> 3},${b >> 3}`;
+        const e = bucketCounts.get(key);
+        if (e) { e.n++; e.sum[0] += r; e.sum[1] += g; e.sum[2] += b; }
+        else bucketCounts.set(key, { n: 1, sum: [r, g, b] });
+    };
+    const sampleRow = y => { for (let x = 0; x < width; x += 2) { const i = (y * width + x) * channels; addSample(data[i], data[i+1], data[i+2]); } };
+    const sampleCol = x => { for (let y = 0; y < height; y += 2) { const i = (y * width + x) * channels; addSample(data[i], data[i+1], data[i+2]); } };
+    for (const y of [0, 2, height-3, height-1]) sampleRow(y);
+    for (const x of [0, 2, width-3, width-1]) sampleCol(x);
+    const topBucket = [...bucketCounts.values()].sort((a,b) => b.n - a.n)[0];
+    const backdrop = topBucket.sum.map(v => Math.round(v / topBucket.n));
+
+    // Foreground bbox
+    const THRESH = 15;
+    let fx1 = width, fy1 = height, fx2 = -1, fy2 = -1;
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const i = (y * width + x) * channels;
+            if (Math.abs(data[i]-backdrop[0]) > THRESH || Math.abs(data[i+1]-backdrop[1]) > THRESH || Math.abs(data[i+2]-backdrop[2]) > THRESH) {
+                if (x < fx1) fx1 = x; if (y < fy1) fy1 = y;
+                if (x > fx2) fx2 = x; if (y > fy2) fy2 = y;
+            }
+        }
+    }
+    const fw = fx2 >= fx1 ? fx2 - fx1 + 1 : 0;
+    const fh = fx2 >= fx1 ? fy2 - fy1 + 1 : 0;
+    const aspectRatio = fw && fh ? (fw / fh).toFixed(3) : 'unknown';
+
+    // Sample 9 points across the foreground (3×3 grid) for color variety
+    const gridColors = [];
+    if (fw && fh) {
+        for (const [gx, gy] of [[0.25,0.25],[0.5,0.25],[0.75,0.25],[0.25,0.5],[0.5,0.5],[0.75,0.5],[0.25,0.75],[0.5,0.75],[0.75,0.75]]) {
+            const px = Math.floor(fx1 + gx * fw);
+            const py = Math.floor(fy1 + gy * fh);
+            const i = (py * width + px) * channels;
+            gridColors.push({ gx, gy, hex: toHex(data[i], data[i+1], data[i+2]), a: channels === 4 ? data[i+3] : 255 });
+        }
+    }
+
+    // Edge brightness: top vs bottom strip of foreground (helps identify gradient direction)
+    let topLum = 0, botLum = 0, topN = 0, botN = 0;
+    if (fw && fh) {
+        const stripH = Math.max(1, Math.floor(fh * 0.15));
+        for (let y = fy1; y < fy1 + stripH; y++) {
+            for (let x = fx1; x <= fx2; x++) {
+                const i = (y * width + x) * channels;
+                topLum += 0.299*data[i] + 0.587*data[i+1] + 0.114*data[i+2]; topN++;
+            }
+        }
+        for (let y = fy2 - stripH + 1; y <= fy2; y++) {
+            for (let x = fx1; x <= fx2; x++) {
+                const i = (y * width + x) * channels;
+                botLum += 0.299*data[i] + 0.587*data[i+1] + 0.114*data[i+2]; botN++;
+            }
+        }
+    }
+    const topAvg = topN ? topLum / topN : 0;
+    const botAvg = botN ? botLum / botN : 0;
+    const gradientHint = topAvg > botAvg + 10 ? 'lighter at top → darker at bottom (top-to-bottom gradient likely)'
+        : botAvg > topAvg + 10 ? 'lighter at bottom → darker at top (bottom-to-top or inner-bottom-glow likely)'
+        : 'top/bottom brightness similar (radial or no strong vertical gradient)';
+
+    // Alpha channel presence in foreground
+    let hasTransparentPixels = false;
+    if (channels === 4 && fw) {
+        for (let y = fy1; y <= fy2 && !hasTransparentPixels; y++) {
+            for (let x = fx1; x <= fx2; x++) {
+                if (data[(y * width + x) * 4 + 3] < 240) { hasTransparentPixels = true; break; }
+            }
+        }
+    }
+
+    // ── Print report ──────────────────────────────────────────────────────────
+    console.log('═══════════════════════════════════════════════════════');
+    console.log('  INIT REPORT — read this before looking at reference.png');
+    console.log('═══════════════════════════════════════════════════════\n');
+
+    console.log('AUTOMATED MEASUREMENTS');
+    console.log('──────────────────────');
+    console.log(`  Canvas:        ${width} × ${height}px  (${channels === 4 ? 'RGBA' : 'RGB'})`);
+    console.log(`  Backdrop:      rgb(${backdrop.join(', ')})  ${toHex(...backdrop)}`);
+    if (fw) {
+        console.log(`  Foreground:    ${fw} × ${fh}px  at (${fx1}, ${fy1})  aspect ${aspectRatio}`);
+        console.log(`  Gradient hint: ${gradientHint}`);
+        console.log(`  Alpha pixels:  ${hasTransparentPixels ? 'YES — element has transparency (glass/frosted likely)' : 'none detected in foreground'}`);
+        console.log('\n  3×3 color grid across foreground (row-major, top-left → bottom-right):');
+        gridColors.forEach(({ gx, gy, hex, a }) => {
+            const label = `(${Math.round(gx*100)}%,${Math.round(gy*100)}%)`;
+            console.log(`    ${label.padEnd(12)} ${hex}${a < 255 ? `  alpha=${a}` : ''}`);
+        });
+    } else {
+        console.log('  Foreground:    none detected');
+    }
+
+    // ── Questions ─────────────────────────────────────────────────────────────
+    console.log('\n\nVISUAL QUESTIONS — answer these by examining reference.png');
+    console.log('────────────────────────────────────────────────────────────\n');
+
+    const q = (n, label, options) => {
+        console.log(`  Q${n}. ${label}`);
+        if (options) options.forEach(o => console.log(`       ${o}`));
+        console.log('');
+    };
+
+    q(1, 'BACKGROUND FILL — what kind of fill does the element have?',
+        ['[ ] solid color', '[ ] linear gradient (note direction + approximate stops)',
+         '[ ] radial gradient (note center position)', '[ ] mesh / multi-stop complex gradient',
+         '[ ] none / fully transparent body']);
+
+    q(2, 'GLASS / BLUR — is there a backdrop-filter blur effect?',
+        ['[ ] yes — frosted/glass (blurred content shows through)',
+         '[ ] no — opaque or only color-transparent (rgba), no blur']);
+
+    q(3, 'BORDER — describe the border(s)',
+        ['[ ] none', '[ ] solid uniform color', '[ ] gradient border (note angle + color stops)',
+         '[ ] inner highlight line (top edge brighter)', '[ ] multiple stacked borders']);
+
+    q(4, 'OUTER SHADOWS — how many distinct outer shadows?',
+        ['For each: direction (top/bottom/left/right/ambient), color, approximate spread/blur']);
+
+    q(5, 'INNER SHADOWS / INNER GLOW — any inset depth effects?',
+        ['For each: which edge (top/bottom/etc.), color (light or dark), approximate size']);
+
+    q(6, 'HIGHLIGHT / SHEEN — is there a specular highlight or gloss?',
+        ['[ ] top-edge bright line', '[ ] interior gradient highlight', '[ ] none']);
+
+    q(7, 'CORNER RADIUS — approximate',
+        ['[ ] sharp (0)', '[ ] slight (4–8px)', '[ ] medium (12–20px)',
+         '[ ] large (24–40px)', '[ ] pill / fully rounded']);
+
+    q(8, 'ICON / LABEL — inner content?',
+        ['[ ] none', '[ ] icon only (describe: line/filled, style, approx size)',
+         '[ ] text only (describe: weight, case, approx size)',
+         '[ ] icon + text']);
+
+    q(9, 'OVERALL DEPTH STYLE — pick the closest',
+        ['[ ] flat (no shadows/highlights)', '[ ] subtle elevation (single drop shadow)',
+         '[ ] neumorphic (dual shadow + inset)',
+         '[ ] glass / frosted (blur + translucency)', '[ ] layered / rich (multiple effects)']);
+
+    q(10, 'ANYTHING ELSE — effects not covered above',
+        ['(noise texture, outline glow, gradient border animation, clip-path shape, etc.)']);
+
+    console.log('═══════════════════════════════════════════════════════');
+    console.log('  Paste your answers alongside reference.png when starting.');
+    console.log('  The more specific the answers, the closer the first pass.');
+    console.log('═══════════════════════════════════════════════════════\n');
 }
 
 async function main() {
@@ -483,6 +693,7 @@ async function main() {
     try {
         if (mode === 'sample') return await sampleColors();
         if (mode === 'inspect') return await inspect();
+        if (mode === 'init') return await init();
         if (mode === 'watch') return await watchMode(flags);
         if (mode === 'diff') return await singleRun(flags);
         console.error(`Unknown mode: ${mode}\n`);

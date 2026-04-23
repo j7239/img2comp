@@ -17,18 +17,62 @@ Before step 1, confirm all of the following:
 
 ## Steps
 
-### 1. Kickoff — Analyze reference, identify inner content, ask focus question
-- Before writing any code, look at `reference.png` to separate **foreground from background** — identify the target element vs. incidental scenery/backdrop to ignore. Do **not** try to match the full visual context; only the foreground element.
-- **Check for inner content.** If the foreground contains:
-  - an **icon**, identify what it is and propose a free icon kit that fits the visual language (e.g., Lucide, Heroicons, Phosphor, Feather for line icons; Material Symbols for filled; Tabler for dense UI). Suggest one and ask the user to confirm or pick another.
-  - **text**, identify the approximate style (geometric sans, humanist sans, display, mono, etc.) and propose a free font (system stack, Inter, Geist, IBM Plex, JetBrains Mono, etc.). Suggest one and ask.
-  - neither — note that and move on.
-- Ask the user one question to confirm target scope and any icon/font choice. Wait for the answer before proceeding.
+### 1. Init — Automated analysis + user briefing interview
 
-### 2. Scaffold + capture baseline
-- Ensure `index.html` contains a `.button-preview` panel (any CSS dimensions — `iterate.js` automatically resizes it to match `reference.png` dims before each screenshot). Inside it, add a stub of the target element (plain `<button>` or `<div>` with no styling) so the iteration loop has something to measure.
-- Run `node iterate.js` once to capture the **baseline diff score** and initial `diff.png`. The score is appended to `scores.log` automatically.
-- Commit the scaffold: `git add index.html && git commit -m "scaffold: baseline <score>%"`. This anchors the iteration history; every later improvement is measured against this number and lives in git.
+```
+node iterate.js init
+```
+
+This prints **automated measurements** (canvas size, backdrop color, foreground bounding box, gradient direction hint, 3×3 color grid) and a **visual questionnaire** (Q1–Q10).
+
+**Workflow:**
+1. Run `node iterate.js init` and read the automated measurements.
+2. Look at `reference.png`.
+3. **Ask the user each question below.** Do not answer them yourself — the user's intent and knowledge of the source design is the input, not a pixel-reading guess. Ask all questions in one message so the user can answer in one pass. Tailor each question based on what's visible in the reference (e.g. if the element is clearly circular, skip the corner-radius options and just confirm).
+4. **Wait for the user's answers** before writing any CSS or markup. Do not proceed to step 2 until confirmed.
+
+The answers replace guesswork in the first CSS pass. A complete briefing typically brings the opening diff score from ~8–12% down to ~2–4%.
+
+---
+
+**Questions to ask the user (Q1–Q10):**
+
+**Q1. Background fill** — What type of fill does the element have? (solid color / linear gradient — direction + stops / radial gradient — center position / complex mesh / transparent)
+
+**Q2. Glass / blur** — Is there a `backdrop-filter: blur` frosted-glass effect, or is the element opaque?
+
+**Q3. Border** — Describe the border(s): none / solid color / gradient border (angle + stops) / inner highlight line on one edge / multiple stacked.
+
+**Q4. Outer shadows** — How many distinct outer shadows? For each: which direction (top-left lift, bottom-right drop, ambient), approximate color, spread, and blur.
+
+**Q5. Inner shadows / glow** — Any inset depth effects? For each: which edge, light or dark, approximate size.
+
+**Q6. Highlight / sheen** — Is there a specular highlight? Top-edge bright line / interior gradient highlight / iridescent or multi-color arc / none.
+
+**Q7. Corner radius** — Sharp / slight (4–8px) / medium (12–20px) / large (24–40px) / pill / fully circular.
+
+**Q8. Icon or label** — None / icon only (what does it depict, line or filled style, approximate size relative to element) / text only (weight, case, size) / icon + text. If an icon or custom font is needed, confirm which kit or typeface to use before writing markup.
+
+**Q9. Overall depth style** — Flat / subtle elevation (single drop shadow) / neumorphic (dual shadow + inset) / glass-frosted / layered-rich (multiple stacked effects).
+
+**Q10. Anything else** — Effects not covered: noise texture, outline glow, gradient border animation, irregular shape, anything the user wants to flag about the design intent or source tool values.
+
+---
+
+### 2. First pass — Write real CSS from the brief, score it immediately
+
+Do **not** scaffold a blank stub first. Use the briefing answers and `reference.png` together to write a genuine first attempt at the full element — structure, fill, border, shadows, and inner content all in one pass. The first `node iterate.js` run scores this real attempt, not a placeholder.
+
+**How to write the first pass:**
+- Translate each Q1–Q10 answer directly to CSS. Q1 → `background`, Q2 → `backdrop-filter`, Q3 → `border` / `outline`, Q4–Q5 → `box-shadow`, Q6 → an additional gradient layer or pseudo-element, Q7 → `border-radius`, Q8 → markup + icon/font.
+- Use the 3×3 color grid from `init` as your starting palette for the fill and shadow colors.
+- Express all geometry as `%` of `.button-preview` (not fixed px from the reference canvas) so the browser view and the screenshot render identically at any size.
+- This pass will not be perfect — the goal is a structurally correct first attempt that diff.png can meaningfully guide, not a polished result.
+
+Once written:
+- Run `node iterate.js` to capture the first real score and `diff.png`.
+- Commit: `git add index.html && git commit -m "first pass: <score>%"`.
+- This is the anchor for all future iteration — every improvement is measured from here.
 
 ### 3. Technology contract — CSS-first
 Before any styling, commit to the tech stack. The reference was built in a vector tool (Figma / Illustrator) with standard effects, so every primitive has a direct CSS equivalent. **Always prioritize CSS** — it produces the most usable, accessible, performant web output.
@@ -85,7 +129,7 @@ Order matters — bounds must be known before color samples can land on the elem
 node iterate.js watch --commit-on-improve --revert-on-regress
 ```
 
-This keeps puppeteer and the HTTP server alive, re-renders and re-diffs on every `index.html` save (~300ms debounce), auto-commits when the score drops by ≥ 0.5pp, and auto-reverts when the score goes up. You focus on CSS edits; the scoring, committing, and reverting run themselves. Leave it running in a terminal next to your editor. `--with-sidebyside` additionally emits `screenshots/default.png` on each run.
+This keeps puppeteer and the HTTP server alive, re-renders and re-diffs on every `index.html` save (~100ms debounce), auto-commits when the score drops by ≥ 0.25pp, and auto-reverts when the score goes up. You focus on CSS edits; the scoring, committing, and reverting run themselves. Leave it running in a terminal next to your editor. `--with-sidebyside` additionally emits `screenshots/default.png` on each run.
 
 Each iteration is one pass through this loop:
 
@@ -103,14 +147,14 @@ The side-by-side `screenshots/default.png` is for human review only — never th
 Apply on every edit in step 6:
 
 - **Named target per edit.** Every change must have a one-sentence purpose ("darken the bottom shadow," "widen the top highlight"). If you can't name what you're fixing, you're fitting to noise — stop and look at `diff.png` again.
-- **Diminishing-returns cutoff.** If an iteration drops the score by less than ~0.5 percentage points and no visible gap is closing, stop layering. Rethink the structure instead of adding more.
+- **Diminishing-returns cutoff.** If an iteration drops the score by less than ~0.25 percentage points and no visible gap is closing, stop layering. Rethink the structure instead of adding more.
 - **Layer caps per property.** Soft limits: max ~3 gradient stops per `background` layer, max ~4 shadows in a `box-shadow`. Beyond that is almost always chasing pixel noise, not visible improvement.
 - **Prune no-ops.** After an iteration that improved the score, try deleting the rule just added. If the score and the visual don't change when it's gone, the rule was noise — delete it.
 - **Prefer one structural move over three tweaks.** If three iterations in a row produce tiny gains, the next edit should be a bigger restructuring (change the base gradient, flip the shadow direction), not another small adjustment.
 - **CSS-first enforcement.** If an edit reaches for SVG or an external library, first confirm no CSS property covers it. SVG is a fallback, not a convenience.
 
 ### 8. Check in with user every 3 iterations (5 if the trend is clean)
-- After every 3 iterations of step 6, pause — **unless the last 3 each dropped the score by ≥ 0.5pp with no regressions in between**, in which case extend the window to 5 before pausing. Monotonic improvement has earned the trust; don't interrupt it.
+- After every 3 iterations of step 6, pause — **unless the last 3 each dropped the score by ≥ 0.25pp with no regressions in between**, in which case extend the window to 5 before pausing. Monotonic improvement has earned the trust; don't interrupt it.
 - Show the user the latest `screenshots/default.png` side-by-side with `reference.png`, plus the `scores.log` trend (e.g., `baseline 8.81% → 5.40% → 3.12% → 2.08%`).
 - Ask: keep iterating, change direction, or call it done?
 - Do not silently continue past the check-in window — diminishing returns and subjective "close enough" calls belong to the user, not me.
@@ -118,7 +162,7 @@ Apply on every edit in step 6:
 ### Done criteria (calibration)
 The user makes the final call, but these are the thresholds I use to suggest stopping:
 
-- **Strong candidate for "done":** diff score under ~1%, `diff.png` shows no visible foreground gaps, and the last 3 iterations each moved the score by <0.5pp. Propose calling it done.
-- **Keep going:** score still dropping by >0.5pp per iteration, or `diff.png` shows an obvious unaddressed foreground gap.
-- **Stop and rethink:** score plateaued above ~2% for 3+ iterations, or regressing. The current approach is probably structurally wrong — consider reverting to an earlier commit and trying a different base structure.
+- **Strong candidate for "done":** diff score under ~0.5%, `diff.png` shows no visible foreground gaps, and the last 3 iterations each moved the score by <0.25pp. Propose calling it done.
+- **Keep going:** score still dropping by >0.25pp per iteration, or `diff.png` shows an obvious unaddressed foreground gap.
+- **Stop and rethink:** score plateaued above ~1% for 3+ iterations, or regressing. The current approach is probably structurally wrong — consider reverting to an earlier commit and trying a different base structure.
 - **Caveat:** if the backdrop caveat in step 5 is inflating the score, these thresholds refer to the *foreground-visible* state, not the raw number. Use `diff.png` as the tiebreaker.

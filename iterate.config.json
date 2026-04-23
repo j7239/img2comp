@@ -1,6 +1,6 @@
 {
   "selector": ".button-preview",
-  "improveThresholdPp": 0.5,
+  "improveThresholdPp": 0.25,
   "maskBox": null,
   "samplePoints": {}
 }
