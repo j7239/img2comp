@@ -14,6 +14,10 @@
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
             background: #f0f0f0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
             padding: 40px 20px;
         }
 
@@ -21,9 +25,7 @@
             display: flex;
             gap: 40px;
             justify-content: center;
-            align-items: flex-start;
-            max-width: 1400px;
-            margin: 0 auto;
+            align-items: center;
             flex-wrap: wrap;
         }
 
@@ -40,29 +42,31 @@
             color: #333;
         }
 
+        /* Both panels size to reference.png's natural dimensions so 1px in
+           the browser equals 1px in the screenshot pipeline. --ref-w / --ref-h
+           are set by the inline script below once reference.png loads. */
+        .reference-image,
+        .button-preview {
+            width: var(--ref-w, 400px);
+            height: var(--ref-h, 400px);
+        }
+
         .reference-image {
-            width: 400px;
-            height: 400px;
             background: #fff;
-            border-radius: 12px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
             overflow: hidden;
             box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
         }
 
         .reference-image img {
+            display: block;
             width: 100%;
             height: 100%;
-            object-fit: contain;
         }
 
-        /* iterate.js auto-resizes .button-preview to match reference dims. */
+        /* iterate.js also force-sizes .button-preview to reference dims
+           before each screenshot — the inline script handles the browser view. */
         .button-preview {
             position: relative;
-            width: 400px;
-            height: 400px;
             background: #f0f0f0;
             overflow: hidden;
         }
@@ -74,6 +78,17 @@
             font-weight: 500;
         }
     </style>
+    <script>
+        (function () {
+            const img = new Image();
+            img.onload = function () {
+                const s = document.documentElement.style;
+                s.setProperty('--ref-w', img.naturalWidth + 'px');
+                s.setProperty('--ref-h', img.naturalHeight + 'px');
+            };
+            img.src = 'reference.png';
+        })();
+    </script>
 </head>
 <body>
     <div class="comparison-container">

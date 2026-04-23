@@ -66,7 +66,7 @@ Do **not** scaffold a blank stub first. Use the briefing answers and `reference.
 **How to write the first pass:**
 - Translate each Q1–Q10 answer directly to CSS. Q1 → `background`, Q2 → `backdrop-filter`, Q3 → `border` / `outline`, Q4–Q5 → `box-shadow`, Q6 → an additional gradient layer or pseudo-element, Q7 → `border-radius`, Q8 → markup + icon/font.
 - Use the 3×3 color grid from `init` as your starting palette for the fill and shadow colors.
-- Express all geometry as `%` of `.button-preview` (not fixed px from the reference canvas) so the browser view and the screenshot render identically at any size.
+- Use reference-pixel values directly (e.g. `top: 128px; width: 285px`). `.button-preview` is sized to `reference.png`'s natural dimensions in both the browser view and the screenshot pipeline, so 1px in CSS equals 1px in the diff.
 - This pass will not be perfect — the goal is a structurally correct first attempt that diff.png can meaningfully guide, not a polished result.
 
 Once written:
@@ -89,6 +89,7 @@ Before any styling, commit to the tech stack. The reference was built in a vecto
    - Design tokens → CSS custom properties (`--base`, `--highlight`, etc.) fed by the values sampled in step 4.
 
 2. **Inline SVG** — only when CSS can't express the shape cleanly: complex paths, non-rectangular gradients, icons traced from the reference. Still vector, never raster.
+   - **Must scale 1:1 with `.button-preview`.** Always set `viewBox="0 0 <refW> <refH>"` using the reference's pixel dimensions, and size the SVG element with `width: 100%; height: 100%` (or the pixel dims directly — the container is already sized to the reference). Omit raw `width="…"` / `height="…"` attributes, which lock the SVG to intrinsic size and break both the browser view and the auto-resized screenshot. Leave `preserveAspectRatio` at the default (`xMidYMid meet`) unless you have a specific reason to change it.
 
 3. **SVG filters** — last resort, for `<feTurbulence>` / `<feGaussianBlur>` / `<feDisplacementMap>` effects (grain, noise, refraction) that CSS can't reach. Use sparingly.
 
@@ -115,9 +116,8 @@ Order matters — bounds must be known before color samples can land on the elem
 
 ### 5. Canvas alignment (automatic)
 - `iterate.js` reads `reference.png`'s pixel dimensions and **automatically resizes `.button-preview`** to match before every screenshot. The element-level screenshot (`.iterate/screenshots/implementation.png`) is therefore always exactly the same dims as the reference — `pixelmatch` compares raw against raw with no stretching.
-- The CSS dimensions of `.button-preview` in `index.html` don't matter for diff accuracy; they only affect the side-by-side review layout.
+- **Browser view is 1px:1px with the diff.** `index.html` contains an inline script that reads `reference.png`'s natural dimensions on page load and sets `--ref-w` / `--ref-h` CSS variables; both `.reference-image` and `.button-preview` are sized off those variables. Opening `index.html` in a browser renders the element at exactly the same dimensions it will be screenshotted at, and the comparison container is flex-centered in the viewport. You can write reference-pixel values directly (`top: 128px; width: 285px`) and the browser view will match the diff — no need for `%` / `aspect-ratio` workarounds.
 - If the auto-sizing ever fails (element missing, puppeteer error), `iterate.js` falls back to `sharp`'s `fit: 'cover'` resize and logs a warning. If you see the warning, fix the root cause — don't ignore it.
-- **Express the target element's geometry as % of `.button-preview`, not absolute reference-px.** The auto-resize only runs inside the screenshot pipeline — opening `index.html` directly in a browser keeps `.button-preview` at its CSS default (e.g. 400×400). Hardcoding coords like `top: 128px; width: 285px` measured from a 622×619 reference will screenshot fine but overflow and clip in the dev view. Convert measurements to percentages of the preview container (plus `aspect-ratio` for non-square shapes), and convert child offsets to percentages of their own box, so the browser view and the screenshot render identically at any container size. Verify by opening `index.html` in a browser once per session.
 - **Scope scoring to the foreground with `MASK_BOX`.** When the reference has non-target scenery that step 1 put out of scope (textures, panels, secondary elements), set `MASK_BOX` at the top of `iterate.js` to a `{ x, y, width, height }` rect in reference-pixel coords. With it set, `pixelmatch` only counts mismatched pixels inside the rect, and the reported percentage is out of the rect's area — so the score reflects actual foreground progress instead of being swamped by scenery noise. `node iterate.js inspect` suggests a rect when auto-detection succeeds; otherwise measure by hand. Leave `MASK_BOX = null` to score the full canvas.
 - **Known caveat:** backdrop mismatch. If the reference has a textured/patterned backdrop and `.button-preview` has a different (e.g., cream gradient) backdrop, every backdrop pixel shows up as a diff. The score will be inflated but the *trend* (going down = improving) remains useful, and `diff.png` still visually highlights foreground gaps. The cleanest fix is `MASK_BOX` above; alternatives are matching the backdrop, sampling an average solid color from the reference corners, or cropping to a foreground ROI.
 
